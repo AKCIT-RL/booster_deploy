@@ -41,29 +41,42 @@ class T1MjDance002ControllerCfg(ControllerCfg):
            -0.2,  0.0,  0.0,  0.4, -0.2,  0.0,  # left leg
            -0.2,  0.0,  0.0,  0.4, -0.2,  0.0,  # right leg
         ],
+        # Gains derived from booster_train commit 651b7a5 — BoosterJointCfg formula:
+        #   kp = armature * (2π * natural_freq)²   (natural_freq=10 Hz)
+        #   kd = 2 * damping_ratio * armature * (2π * natural_freq)   (damping_ratio=2.0)
+        # Motors per joint group:
+        #   Head        → DM4310  (arm=0.0018,     kp=7.11,   kd=0.45)
+        #   Arms        → E4310   (arm=0.0282528,  kp=111.54, kd=7.10)
+        #   Waist/HipR/Y→ E6408   (arm=0.0478125,  kp=188.76, kd=12.02)
+        #   Hip_Pitch   → E8112   (arm=0.0523908,  kp=206.83, kd=13.17)
+        #   Knee_Pitch  → E8116   (arm=0.0636012,  kp=251.09, kd=15.98)
+        #   Ankle       → E4315×2 (arm=0.0679104,  kp=268.10, kd=17.07)
         joint_stiffness=[
-            4.0, 4.0,
-            50.0, 50.0, 50.0, 50.0,
-            50.0, 50.0, 50.0, 50.0,
-            200.,
-            200.0, 200.0, 200.0, 200.0, 50.0, 50.0,
-            200.0, 200.0, 200.0, 200.0, 50.0, 50.0,
+            7.11, 7.11,                                          # head   (DM4310)
+            111.54, 111.54, 111.54, 111.54,                     # left arm  (E4310)
+            111.54, 111.54, 111.54, 111.54,                     # right arm (E4310)
+            188.76,                                              # waist  (E6408)
+            206.83, 188.76, 188.76, 251.09, 268.10, 268.10,    # left leg
+            206.83, 188.76, 188.76, 251.09, 268.10, 268.10,    # right leg
         ],
+        # kd applied as passive XML joint damping (implicit, via MuJoCo solver).
+        # These values are also sent to the real robot hardware controller.
+        # In MuJoCo sim, ctrl_step zeros kd in the explicit PD to avoid double-counting.
         joint_damping=[
-            1.0, 1.0,
-            1.0, 1.0, 1.0, 1.0,
-            1.0, 1.0, 1.0, 1.0,
-            5.0,
-            5.0, 5.0, 5.0, 5.0, 2.0, 2.0,
-            5.0, 5.0, 5.0, 5.0, 2.0, 2.0,
+            0.45, 0.45,                                          # head   (DM4310)
+            7.10, 7.10, 7.10, 7.10,                             # left arm  (E4310)
+            7.10, 7.10, 7.10, 7.10,                             # right arm (E4310)
+            12.02,                                               # waist  (E6408)
+            13.17, 12.02, 12.02, 15.98, 17.07, 17.07,          # left leg
+            13.17, 12.02, 12.02, 15.98, 17.07, 17.07,          # right leg
         ],
         effort_limit=[
-            7.0,  7.0,                                     # head
-            18.0, 18.0, 18.0, 18.0,                       # left arm
-            18.0, 18.0, 18.0, 18.0,                       # right arm
-            25.0,                                          # waist
-            45.0, 25.0, 25.0, 60.0, 24.0, 15.0,          # left leg (Pitch, Roll, Yaw, Knee, Ank_P, Ank_R)
-            45.0, 25.0, 25.0, 60.0, 24.0, 15.0,          # right leg
+            7.0,  7.0,                                           # head   (DM4310)
+            38.3, 38.3, 38.3, 38.3,                             # left arm  (E4310)
+            38.3, 38.3, 38.3, 38.3,                             # right arm (E4310)
+            68.0,                                                # waist  (E6408)
+            96.0, 68.0, 68.0, 130.0, 76.0, 76.0,               # left leg
+            96.0, 68.0, 68.0, 130.0, 76.0, 76.0,               # right leg
         ],
     )
     enable_velocity_commands = False

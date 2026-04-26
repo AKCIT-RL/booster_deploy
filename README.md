@@ -28,7 +28,7 @@ Booster Deploy is a lightweight deployment framework that supports running contr
 ### Run Sim2Sim (MuJoCo)
 
 - Download and install BoosterAssets:
-   - Clone the [booster_assets](https://github.com/BoosterRobotics/booster_assets) which contains Booster robot models and resources.
+   - Clone the [booster_assets](https://github.com/AKCIT-RL/booster_assets#) which contains Booster robot models and resources.
    - Install booster_assets python helper following the instructions in the repository.
 
 - Install Python dependencies on local machine:

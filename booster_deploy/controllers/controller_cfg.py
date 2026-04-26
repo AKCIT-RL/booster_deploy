@@ -22,6 +22,11 @@ class MujocoControllerCfg:
     log_states: Optional[str] = None
     visualize_reference_ghost: bool = False
     ghost_rgba: List[float] = [0.2, 0.8, 0.2, 0.25]
+    # Video recording (requires opencv-python).
+    # If set, recording starts automatically; otherwise toggle with R key.
+    video_path: Optional[str] = None
+    video_width: int = 1280
+    video_height: int = 720
 
 
 @configclass
@@ -46,6 +51,12 @@ class RobotCfg:
     default_joint_pos: List[float] = MISSING
     effort_limit: List[float] = MISSING
 
+    # T-N curve parameters (BoosterDelayedPDActuator).
+    # velocity_limit: no-load speed per joint [rad/s]. None disables T-N curve.
+    # knee_point_velocity: speed below which full torque is available [rad/s].
+    velocity_limit: Optional[List[float]] = None
+    knee_point_velocity: Optional[List[float]] = None
+
     mjcf_path: str = MISSING
 
     prepare_state: PrepareStateCfg = MISSING
@@ -58,6 +69,10 @@ class RobotCfg:
             == len(self.default_joint_pos)
             == len(self.effort_limit)
         )
+        if self.velocity_limit is not None:
+            assert len(self.velocity_limit) == len(self.joint_names)
+        if self.knee_point_velocity is not None:
+            assert len(self.knee_point_velocity) == len(self.joint_names)
 
 
 @configclass

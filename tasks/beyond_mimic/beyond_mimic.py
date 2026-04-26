@@ -57,8 +57,8 @@ class BeyondMimicPolicy(Policy):
         self.motion.to(self.cfg.device)
 
     def _set_command(self):
-        row_ids = self.current_frame % self.motion.time_step_total
-        # row_ids = min(self.current_frame, self.motion.time_step_total - 1)
+        # row_ids = self.current_frame % self.motion.time_step_total
+        row_ids = min(self.current_frame, self.motion.time_step_total - 1)
 
         self.cmd_dof_pos = self.motion.joint_pos[row_ids]
         self.cmd_dof_vel = self.motion.joint_vel[row_ids]

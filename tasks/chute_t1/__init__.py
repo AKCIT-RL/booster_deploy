@@ -9,10 +9,12 @@ from .chute_t1 import T1MjDance002ControllerCfg
 class T1MjDance002Cfg(T1MjDance002ControllerCfg):
     def __post_init__(self):
         super().__post_init__()
-        self.policy.checkpoint_path = "models/paper/booster_t1_trivela_14999.pt"
-        self.policy.motion_path = "motions/paper/booster_t1_trivela.npz"
-        # self.policy.checkpoint_path = "models/paper/penalti_ney_gmr_model_10500.pt"
-        # self.policy.motion_path = "motions/paper/booster_t1_ney_ref.npz"
+        # self.policy.checkpoint_path = "shortpaper/booster_t1_aceno.pt"
+        # self.policy.motion_path = "shortpaper/booster_t1_aceno.npz"
+
+        self.policy.checkpoint_path = "models/paper/cr7_model_14999.pt"
+        self.policy.motion_path = "motions/paper/booster_t1_cr7.npz"
+
         self.policy.enable_safety_fallback = True
 
 
