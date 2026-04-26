@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from collections import deque
 from time import sleep, strftime, monotonic
 import select
 import numpy as np
@@ -254,7 +255,7 @@ class MujocoController(BaseController):
         cfg = self.cfg.mujoco
         path = cfg.video_path or f"recording_{strftime('%Y%m%d_%H%M%S')}.mp4"
         w, h = cfg.video_width, cfg.video_height
-        fps = 50
+        fps = 30
         if self._renderer is None:
             # Ensure the offscreen framebuffer is large enough before creating renderer
             self.mj_model.vis.global_.offwidth = max(self.mj_model.vis.global_.offwidth, w)
@@ -294,6 +295,11 @@ class MujocoController(BaseController):
         self._init_qpos = self.mj_data.qpos.copy()
 
         self._last_video_frame_time: float = 0.0
+        # History for step-back (← key): stores (qpos, qvel, current_frame) snapshots
+        self._state_history: deque = deque(maxlen=500)
+        # Action delay buffer: holds recent dof_targets; applies the oldest after delay steps
+        _delay = self.cfg.mujoco.action_delay_steps
+        self._action_buffer: deque = deque(maxlen=max(_delay + 1, 1))
 
         # --- Simulation control flags (written by key_callback, read by main loop) ---
         self._paused = False
@@ -308,11 +314,13 @@ class MujocoController(BaseController):
         # GLFW key codes
         _KEY_SPACE     = 32
         _KEY_BACKSPACE = 259
-        _KEY_RIGHT     = 262   # step one frame while paused
+        _KEY_RIGHT     = 262   # step one frame forward while paused
+        _KEY_LEFT      = 263   # step one frame back while paused
         _KEY_R         = 82    # toggle video recording
         _KEY_G         = 71    # toggle ghost visibility
 
         self._do_toggle_rec = False
+        self._step_back = False
         self._show_ghost = self.cfg.mujoco.visualize_reference_ghost
 
         def key_callback(keycode):
@@ -323,6 +331,8 @@ class MujocoController(BaseController):
                 self._do_reset = True
             elif keycode == _KEY_RIGHT:
                 self._step_once = True
+            elif keycode == _KEY_LEFT:
+                self._step_back = True
             elif 48 <= keycode <= 57:          # 0–9: choose slot
                 self._key_slot = keycode - 48
                 print(f"[sim] key slot → {self._key_slot}")
@@ -348,7 +358,8 @@ class MujocoController(BaseController):
             print(
                 "\n[sim] Controls:\n"
                 "  Space      → pause / resume\n"
-                "  → (right)  → step one frame (while paused)\n"
+                "  → (right)  → step one frame forward (while paused)\n"
+                "  ← (left)   → step one frame back (while paused)\n"
                 "  Backspace  → reset to initial state\n"
                 "  0-9        → select save/load slot\n"
                 "  S          → save state to current slot\n"
@@ -426,14 +437,44 @@ class MujocoController(BaseController):
                     print("[sim] reset to motion start")
 
                 # --- Pause: hold until space or right-arrow ---
-                if self._paused and not self._step_once:
+                if self._paused and not self._step_once and not self._step_back:
                     sleep(0.01)
                     viewer.sync()
                     continue
+
+                # --- Step back: restore previous physics snapshot ---
+                if self._step_back:
+                    self._step_back = False
+                    if self._state_history:
+                        snap_qpos, snap_qvel, snap_frame = self._state_history.pop()
+                        with viewer.lock():
+                            self.mj_data.qpos[:] = snap_qpos
+                            self.mj_data.qvel[:] = snap_qvel
+                            mujoco.mj_forward(self.mj_model, self.mj_data)
+                            self.update_state()
+                        p = self.policy
+                        if hasattr(p, 'current_frame'):
+                            p.current_frame = snap_frame
+                            p._set_command()
+                            joint_pos = p.cmd_dof_pos[self.robot.data.sim2real_joint_indexes]
+                            self.set_reference_qpos(
+                                torch.cat([p.cmd_root_pos_w, p.cmd_root_quat_w, joint_pos], dim=0))
+                    if self._show_ghost:
+                        self.render_reference_robot(viewer, rgba=self._ghost_rgba)
+                    viewer.sync()
+                    continue
+
                 self._step_once = False
 
                 # --- Normal simulation step ---
                 _step_start = monotonic()
+                # Save snapshot before stepping (enables ← rewind)
+                _snap_frame = self.policy.current_frame if hasattr(self.policy, 'current_frame') else None
+                self._state_history.append((
+                    self.mj_data.qpos.copy(),
+                    self.mj_data.qvel.copy(),
+                    _snap_frame,
+                ))
                 with viewer.lock():
                     self.update_state()
                 dof_targets = self.policy_step()
