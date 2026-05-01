@@ -255,7 +255,7 @@ class MujocoController(BaseController):
         cfg = self.cfg.mujoco
         path = cfg.video_path or f"recording_{strftime('%Y%m%d_%H%M%S')}.mp4"
         w, h = cfg.video_width, cfg.video_height
-        fps = 30
+        fps = 50
         if self._renderer is None:
             # Ensure the offscreen framebuffer is large enough before creating renderer
             self.mj_model.vis.global_.offwidth = max(self.mj_model.vis.global_.offwidth, w)
@@ -489,7 +489,7 @@ class MujocoController(BaseController):
 
                 if self._recording:
                     now = monotonic()
-                    if now - self._last_video_frame_time >= 1.0 / 30:
+                    if now - self._last_video_frame_time >= 1.0 / 50:
                         self._write_video_frame(viewer)
                         self._last_video_frame_time = now
 
