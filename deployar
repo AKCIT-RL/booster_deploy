@@ -1,0 +1,59 @@
+#!/bin/bash
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TASK_DIR="$SCRIPT_DIR/tasks/chute_t1"
+INIT_FILE="$TASK_DIR/__init__.py"
+
+DEPLOY_DIR="$TASK_DIR/deployar"
+
+mapfile -t pts < <(find "$DEPLOY_DIR" -maxdepth 1 -name "*.pt" | sort | xargs -I{} basename {} .pt)
+
+if [ ${#pts[@]} -eq 0 ]; then
+    echo "Nenhum .pt encontrado em $DEPLOY_DIR/"
+    exit 1
+fi
+
+if [ -n "$1" ]; then
+    BASENAME="$1"
+else
+    if command -v fzf &>/dev/null; then
+        BASENAME=$(printf '%s\n' "${pts[@]}" | fzf --prompt="Selecione a política: ")
+        [ -z "$BASENAME" ] && exit 0
+    else
+        echo "Políticas disponíveis:"
+        for i in "${!pts[@]}"; do
+            printf "  [%2d] %s\n" "$((i+1))" "${pts[$i]}"
+        done
+        echo ""
+        read -rp "Selecione [1-${#pts[@]}]: " choice
+        if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#pts[@]}" ]; then
+            echo "Seleção inválida."
+            exit 1
+        fi
+        BASENAME="${pts[$((choice-1))]}"
+    fi
+fi
+
+MODEL_PATH="deployar/$BASENAME.pt"
+MOTION_PATH="deployar/$BASENAME.npz"
+
+if [ ! -f "$TASK_DIR/$MOTION_PATH" ]; then
+    echo "Erro: motion não encontrado: $TASK_DIR/$MOTION_PATH"
+    exit 1
+fi
+
+echo ""
+echo "  model:  $MODEL_PATH"
+echo "  motion: $MOTION_PATH"
+echo ""
+
+sed -i "s|self\.policy\.checkpoint_path = .*|self.policy.checkpoint_path = \"$MODEL_PATH\"|" "$INIT_FILE"
+sed -i "s|self\.policy\.motion_path = .*|self.policy.motion_path = \"$MOTION_PATH\"|" "$INIT_FILE"
+
+echo "  __init__.py atualizado."
+echo ""
+
+cd "$SCRIPT_DIR"
+source /opt/booster/BoosterRos2Interface/install/setup.bash
+python3 scripts/deploy.py --task chute_t1
