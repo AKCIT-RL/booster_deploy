@@ -77,6 +77,12 @@ Booster Deploy is a lightweight deployment framework that supports running contr
    ```
 
 
+## Task-specific notes
+
+- [`tasks/mimickit_steering/`](tasks/mimickit_steering/README.md) — T1 steering
+  policy trained in MimicKit. Has its own requirements, its own keyboard teleop,
+  and a `--pd` switch for comparing damping schemes.
+
 ## Repository Layout
 
 ```

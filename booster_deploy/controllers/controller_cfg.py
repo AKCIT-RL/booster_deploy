@@ -27,6 +27,10 @@ class MujocoControllerCfg:
     video_path: Optional[str] = None
     video_width: int = 1280
     video_height: int = 720
+    # Steps of actuation delay: dof_targets are buffered and the oldest applied.
+    # mujoco_controller.run() reads this unconditionally; without it every task
+    # raises AttributeError on start. 0 reproduces the undelayed behaviour.
+    action_delay_steps: int = 0
 
 
 @configclass
