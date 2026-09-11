@@ -29,6 +29,10 @@ input" every step - harmless, and absent in interactive use.
 why the choice is not cosmetic. Default is `explicit`, the scheme the policy was
 trained and validated against.
 
+--checkpoint overrides the policy checkpoint (default: mimickit_steering.py's
+MimicKitSteeringPolicyCfg.checkpoint_path). Relative paths resolve against the
+task dir, same as the config default.
+
 HOW THE VIEWER KEYS ARE PRESERVED
 
 MujocoController.run() builds its key_callback locally and passes it straight to
@@ -164,6 +168,9 @@ def main():
     parser.add_argument("--task", default="t1_mimickit_steering")
     parser.add_argument("--pd", default="explicit", choices=sorted(CONTROLLERS),
                         help="damping scheme (see controllers.py)")
+    parser.add_argument("--checkpoint", default=None,
+                        help="policy checkpoint path (default: cfg.policy.checkpoint_path, "
+                             "relative to the task dir unless absolute)")
     parser.add_argument("--vx", type=float, default=0.0)
     parser.add_argument("--vy", type=float, default=0.0)
     parser.add_argument("--yaw", type=float, default=0.0)
@@ -179,6 +186,8 @@ def main():
     cfg = get_task(args.task)
     if (args.log_states is not None):
         cfg.mujoco.log_states = args.log_states
+    if (args.checkpoint is not None):
+        cfg.policy.checkpoint_path = args.checkpoint
 
     controller = make_keyboard_controller(CONTROLLERS[args.pd])(cfg)
     controller.vel_command.lin_vel_x = args.vx

@@ -167,7 +167,7 @@ class MimicKitSteeringPolicyCfg(PolicyCfg):
         "left_ankle_roll_link", "right_ankle_roll_link", "aahead_pitch_link",
         "left_elbow_yaw_link", "right_elbow_yaw_link",
     ]
-    tar_speed_min: float = 0.5
+    tar_speed_min: float = 0.0
     tar_speed_max: float = 2.5
     policy_dt: float = 1.0 / 30.0
 
