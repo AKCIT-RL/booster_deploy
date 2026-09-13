@@ -9,6 +9,11 @@ import select
 import atexit
 import sys
 
+import rclpy
+from rclpy.executors import SingleThreadedExecutor
+from rclpy.qos import QoSProfile, ReliabilityPolicy
+from booster_interface.msg import RemoteControllerState
+
 
 @dataclass
 class JoystickConfig:
@@ -17,15 +22,13 @@ class JoystickConfig:
     max_vyaw: float = 1.
     control_threshold: float = 0.1
     # logitech
-    custom_mode_button: evdev.ecodes = evdev.ecodes.BTN_A
-    rl_gait_button: evdev.ecodes = evdev.ecodes.BTN_B
+    custom_mode_button: evdev.ecodes = evdev.ecodes.BTN_X
+    rl_gait_button: evdev.ecodes = evdev.ecodes.BTN_A
     x_axis: evdev.ecodes = evdev.ecodes.ABS_Y
     y_axis: evdev.ecodes = evdev.ecodes.ABS_X
     yaw_axis: evdev.ecodes = evdev.ecodes.ABS_Z
 
-    # xiaoji
-    # custom_mode_button: evdev.ecodes = evdev.ecodes.BTN_B
-    # rl_gait_button: evdev.ecodes = evdev.ecodes.BTN_A
+    # xiaoji (use the same X=Custom, A=RL mode mapping)
     # x_axis: evdev.ecodes = evdev.ecodes.ABS_Y
     # y_axis: evdev.ecodes = evdev.ecodes.ABS_X
     # yaw_axis: evdev.ecodes = evdev.ecodes.ABS_RX
@@ -39,36 +42,52 @@ class RemoteControlService:
         self.config = config or JoystickConfig()
         self._lock = threading.Lock()
         self._running = True
-        try:
-            self._init_joystick()
-            self._start_joystick_thread()
-        except Exception as e:
-            print(f"{e}, downgrade to keyboard control")
-            self._init_keyboard_control()
-            self._start_keyboard_thread()
-
         self.vx = 0.0
         self.vy = 0.0
         self.vyaw = 0.0
 
+        self.joystick = None
+        self.joystick_runner = None
+        self.keyboard_runner = None
+        self.ros_node = None
+        self.ros_executor = None
+        self.ros_runner = None
+        self._topic_custom_mode = False
+        self._topic_rl_gait = False
+
+        self._init_keyboard_control()
+        self._start_keyboard_thread()
+
+        try:
+            self._init_joystick()
+            self._start_joystick_thread()
+        except Exception as e:
+            print(f"{e}, trying /remote_controller_state topic fallback...")
+            try:
+                self._init_topic_fallback()
+            except Exception as topic_error:
+                print(f"{topic_error}, downgrade to keyboard control")
+
     def get_operation_hint(self) -> str:
         if hasattr(self, "joystick") and getattr(self, "joystick") is not None:
             return "Joystick left axis for forward/backward/left/right, right axis for rotation left/right"
+        if self.ros_node is not None:
+            return "Remote controller topic or keyboard 'w'/'s'/'a'/'d'/'q'/'e' controls velocity, press 'Space' to stop."
         return "Press keyboard 'w'/'s' to increase/decrease vx; Press 'a'/'d' to increase/decrease vy; Press 'q'/'e' to increase/decrease vyaw, press 'Space' to stop."
 
     def get_custom_mode_operation_hint(self) -> str:
         if hasattr(self, "joystick") and getattr(self, "joystick") is not None:
             return "Press joystick button X to start custom mode."
+        if self.ros_node is not None:
+            return "Press remote controller button X or keyboard 'x' to start custom mode."
         return "Press keyboard 'x' to start custom mode."
 
     def get_rl_gait_operation_hint(self) -> str:
-        if hasattr(self, "joystick") and getattr(self, "joystick") is not None:
-            return "Press joystick button A to start rl Gait."
-        return "Press keyboard 'r' to start rl Gait."
+        # Keep the mode-switch prompt consistent across joystick, ROS topic,
+        # and keyboard input paths.
+        return "Press remote controller button A or keyboard 'r' to start RL mode."
 
     def _init_keyboard_control(self):
-        self.joystick = None
-        self.joystick_runner = None
         self.keyboard_start_custom_mode = False
         self.keyboard_start_rl_gait = False
 
@@ -130,45 +149,93 @@ class RemoteControlService:
                 pass
 
     def _handle_keyboard_press(self, key):
-        if key == "x":
-            self.keyboard_start_custom_mode = True
-        if key == "r":
-            self.keyboard_start_rl_gait = True
-        if key == "w":
-            old_x = self.vx
-            self.vx += 0.1
-            self.vx = min(self.vx, self.config.max_vx)
-            print(f"VX: {old_x:.1f} => {self.vx:.1f}")
-        if key == "s":
-            old_x = self.vx
-            self.vx -= 0.1
-            self.vx = max(self.vx, -self.config.max_vx)
-            print(f"VX: {old_x:.1f} => {self.vx:.1f}")
-        if key == "a":
-            old_y = self.vy
-            self.vy += 0.1
-            self.vy = min(self.vy, self.config.max_vy)
-            print(f"VY: {old_y:.1f} => {self.vy:.1f}")
-        if key == "d":
-            old_y = self.vy
-            self.vy -= 0.1
-            self.vy = max(self.vy, -self.config.max_vy)
-            print(f"VY: {old_y:.1f} => {self.vy:.1f}")
-        if key == "q":
-            old_yaw = self.vyaw
-            self.vyaw += 0.1
-            self.vyaw = min(self.vyaw, self.config.max_vyaw)
-            print(f"VYaw: {old_yaw:.1f} => {self.vyaw:.1f}")
-        if key == "e":
-            old_yaw = self.vyaw
-            self.vyaw -= 0.1
-            self.vyaw = max(self.vyaw, -self.config.max_vyaw)
-            print(f"VYaw: {old_yaw:.1f} => {self.vyaw:.1f}")
-        if key == "space":
-            self.vx = 0
-            self.vy = 0
-            self.vyaw = 0
-            print("FULL STOP")
+        message = None
+        with self._lock:
+            if key == "x":
+                self.keyboard_start_custom_mode = True
+            if key == "r":
+                self.keyboard_start_rl_gait = True
+            if key == "w":
+                old_x = self.vx
+                self.vx = min(self.vx + 0.1, self.config.max_vx)
+                message = f"VX: {old_x:.1f} => {self.vx:.1f}"
+            if key == "s":
+                old_x = self.vx
+                self.vx = max(self.vx - 0.1, -self.config.max_vx)
+                message = f"VX: {old_x:.1f} => {self.vx:.1f}"
+            if key == "a":
+                old_y = self.vy
+                self.vy = min(self.vy + 0.1, self.config.max_vy)
+                message = f"VY: {old_y:.1f} => {self.vy:.1f}"
+            if key == "d":
+                old_y = self.vy
+                self.vy = max(self.vy - 0.1, -self.config.max_vy)
+                message = f"VY: {old_y:.1f} => {self.vy:.1f}"
+            if key == "q":
+                old_yaw = self.vyaw
+                self.vyaw = min(self.vyaw + 0.1, self.config.max_vyaw)
+                message = f"VYaw: {old_yaw:.1f} => {self.vyaw:.1f}"
+            if key == "e":
+                old_yaw = self.vyaw
+                self.vyaw = max(self.vyaw - 0.1, -self.config.max_vyaw)
+                message = f"VYaw: {old_yaw:.1f} => {self.vyaw:.1f}"
+            if key == "space":
+                self.vx = 0
+                self.vy = 0
+                self.vyaw = 0
+                message = "FULL STOP"
+        if message is not None:
+            print(message)
+
+    def _init_topic_fallback(self) -> None:
+        """Subscribe to the ROS2 remote-controller state as a fallback input."""
+        if not rclpy.ok():
+            raise RuntimeError("rclpy is not initialized")
+
+        self.ros_node = rclpy.create_node("remote_control_topic_sub")
+        self.ros_executor = SingleThreadedExecutor()
+
+        def topic_callback(msg: RemoteControllerState):
+            with self._lock:
+                self.vx = -float(msg.ly) * self.config.max_vx
+                self.vy = -float(msg.lx) * self.config.max_vy
+                self.vyaw = -float(msg.rx) * self.config.max_vyaw
+
+                if msg.hat_r:
+                    self.vyaw = self.config.max_vyaw * 0.5
+                elif msg.hat_l:
+                    self.vyaw = -self.config.max_vyaw * 0.5
+                if msg.hat_u:
+                    self.vx = self.config.max_vx * 0.5
+                elif msg.hat_d:
+                    self.vx = -self.config.max_vx * 0.5
+
+                # Keep the topic mapping aligned with the physical controller:
+                # X starts Custom mode and A starts RL mode. ``getattr`` keeps
+                # the callback compatible with older message definitions.
+                # Button messages can be followed by an axis update before the
+                # controller's 10 Hz polling loop runs. Latch the press until
+                # it is consumed so short X/A presses are not missed.
+                if getattr(msg, "x", False):
+                    self._topic_custom_mode = True
+                if getattr(msg, "a", False):
+                    self._topic_rl_gait = True
+
+        self.ros_node.create_subscription(
+            RemoteControllerState,
+            "/remote_controller_state",
+            topic_callback,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
+        )
+        self.ros_executor.add_node(self.ros_node)
+
+        def ros_spinner():
+            while self._running and rclpy.ok():
+                self.ros_executor.spin_once(timeout_sec=0.1)
+
+        self.ros_runner = threading.Thread(target=ros_spinner, daemon=True)
+        self.ros_runner.start()
+        print("Subscribed to /remote_controller_state topic as fallback")
 
     def _init_joystick(self) -> None:
         """Initialize and validate joystick connection using evdev."""
@@ -215,15 +282,35 @@ class RemoteControlService:
 
     def start_custom_mode(self) -> bool:
         """Check if custom mode button is pressed."""
-        if hasattr(self, "joystick") and getattr(self, "joystick") is not None:
-            return self.joystick.active_keys() == [self.config.custom_mode_button]
-        return self.keyboard_start_custom_mode
+        joystick_triggered = (
+            self.joystick is not None
+            and self.config.custom_mode_button in self.joystick.active_keys()
+        )
+        with self._lock:
+            triggered = (
+                joystick_triggered
+                or self._topic_custom_mode
+                or self.keyboard_start_custom_mode
+            )
+            self._topic_custom_mode = False
+            self.keyboard_start_custom_mode = False
+            return triggered
 
     def start_rl_gait(self) -> bool:
         """Check if gait button is pressed."""
-        if hasattr(self, "joystick") and getattr(self, "joystick") is not None:
-            return self.joystick.active_keys() == [self.config.rl_gait_button]
-        return self.keyboard_start_rl_gait
+        joystick_triggered = (
+            self.joystick is not None
+            and self.config.rl_gait_button in self.joystick.active_keys()
+        )
+        with self._lock:
+            triggered = (
+                joystick_triggered
+                or self._topic_rl_gait
+                or self.keyboard_start_rl_gait
+            )
+            self._topic_rl_gait = False
+            self.keyboard_start_rl_gait = False
+            return triggered
 
     def _run_joystick(self):
         """Poll joystick events."""
@@ -243,8 +330,8 @@ class RemoteControlService:
                 time.sleep(0.05)
 
     def _handle_axis(self, code: int, value: int):
-        try:
-            """Handle axis events."""
+        """Handle axis events."""
+        with self._lock:
             if code == self.config.x_axis:
                 self.vx = self._scale(value, self.config.max_vx, self.config.control_threshold, code)
                 # print("value x:", self.vx)
@@ -254,8 +341,6 @@ class RemoteControlService:
             elif code == self.config.yaw_axis:
                 self.vyaw = self._scale(value, self.config.max_vyaw, self.config.control_threshold, code)
                 # print("value yaw:", self.vyaw)
-        except Exception:
-            raise
 
     def _scale(self, value: float, max: float, threshold: float, axis_code: int) -> float:
         """Scale joystick input to velocity command using actual axis ranges."""
@@ -313,6 +398,23 @@ class RemoteControlService:
                     print("Keyboard thread didn't exit within the time limit")
             except Exception as e:
                 print(f"Error waiting for keyboard thread to end: {e}")
+        if hasattr(self, "ros_runner") and getattr(self, "ros_runner") is not None:
+            try:
+                self.ros_runner.join(timeout=1.0)
+                if self.ros_runner.is_alive():
+                    print("ROS topic thread didn't exit within the time limit")
+            except Exception as e:
+                print(f"Error waiting for ROS topic thread to end: {e}")
+        if hasattr(self, "ros_node") and getattr(self, "ros_node") is not None:
+            try:
+                self.ros_node.destroy_node()
+            except Exception as e:
+                print(f"Error destroying ROS topic node: {e}")
+        if hasattr(self, "ros_executor") and getattr(self, "ros_executor") is not None:
+            try:
+                self.ros_executor.shutdown()
+            except Exception as e:
+                print(f"Error shutting down ROS topic executor: {e}")
 
     def __enter__(self):
         return self

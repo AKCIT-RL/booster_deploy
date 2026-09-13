@@ -583,6 +583,37 @@ def yaw_quat(quat: torch.Tensor) -> torch.Tensor:
     quat_yaw = normalize(quat_yaw)
     return quat_yaw.view(shape)
 
+def yaw_quat_zxy(quat: torch.Tensor) -> torch.Tensor:
+    """Extract the yaw (ZXY) component of a quaternion.
+
+    Args:
+        quat: The orientation in (w, x, y, z). Shape is (..., 4)
+
+    Returns:
+        A quaternion with only yaw component (rotation about +Z).
+    """
+    shape = quat.shape
+    q = quat.view(-1, 4)
+
+    qw = q[:, 0]
+    qx = q[:, 1]
+    qy = q[:, 2]
+    qz = q[:, 3]
+
+    # ZXY yaw extraction:
+    # yaw_z = atan2(-R01, R11)
+    # R01 = 2*(qx*qy - qw*qz)
+    # R11 = 1 - 2*(qx^2 + qz^2)
+    num = -2.0 * (qx * qy - qw * qz)
+    den = 1.0 - 2.0 * (qx * qx + qz * qz)
+    yaw = torch.atan2(num, den)
+
+    quat_yaw = torch.zeros_like(q)
+    quat_yaw[:, 0] = torch.cos(0.5 * yaw)
+    quat_yaw[:, 3] = torch.sin(0.5 * yaw)
+
+    quat_yaw = normalize(quat_yaw)
+    return quat_yaw.view(shape)
 
 @torch.jit.script
 def quat_box_minus(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:

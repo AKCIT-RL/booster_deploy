@@ -14,6 +14,7 @@ from .base_controller import BaseController, ControllerCfg, VelocityCommand
 class MujocoController(BaseController):
     def __init__(self, cfg: ControllerCfg):
         super().__init__(cfg)
+        self._paused = False
 
         mjcf_path = self._expand_assets_placeholder(self.robot.cfg.mjcf_path)
         self.mj_model = mujoco.MjModel.from_xml_path(mjcf_path)
@@ -52,6 +53,27 @@ class MujocoController(BaseController):
         # Clear reference; policy.reset() may set a fresh one.
         self._reference_qpos = None
         return super().start()
+
+    def _on_mujoco_key(self, keycode: int) -> None:
+        if keycode != ord(" "):
+            return
+
+        self._paused = not self._paused
+        status = "paused" if self._paused else "resumed"
+        print(f"[MuJoCo] {status} (space)")
+
+    def _wait_while_paused(self) -> bool:
+        if not self._paused:
+            return True
+
+        viewer = getattr(self, "viewer", None)
+        if viewer is None:
+            return False
+
+        while viewer.is_running() and self.is_running and self._paused:
+            viewer.sync()
+            sleep(0.01)
+        return bool(viewer.is_running() and self.is_running)
 
     def render_reference_robot(
         self,
@@ -120,6 +142,7 @@ class MujocoController(BaseController):
                 parts = sys.stdin.readline().strip().split()
                 if len(parts) == 3:
                     (cmd.lin_vel_x, cmd.lin_vel_y, cmd.ang_vel_yaw) = map(float, parts)
+                    cmd.lin_vel_x = cmd.clamp_vx(cmd.lin_vel_x)
                     print(
                         f"Updated command to: x={cmd.lin_vel_x},"
                         f"y={cmd.lin_vel_y}, yaw={cmd.ang_vel_yaw}\n"
@@ -224,15 +247,23 @@ class MujocoController(BaseController):
 
     def run(self):
         with mujoco.viewer.launch_passive(
-                self.mj_model, self.mj_data) as viewer:
+            self.mj_model,
+            self.mj_data,
+            key_callback=self._on_mujoco_key,
+            show_left_ui=bool(getattr(self.cfg.mujoco, "show_left_ui", False)),
+            show_right_ui=bool(getattr(self.cfg.mujoco, "show_right_ui", False)),
+        ) as viewer:
 
             self.viewer = viewer
             viewer.cam.elevation = -20
+            print("[MuJoCo] Controls: Space=pause/resume.")
             if self.vel_command is not None:
                 print("\nSet command (x, y, yaw): ", end="")
             self.update_state()
             self.start()
             while viewer.is_running() and self.is_running:
+                if not self._wait_while_paused():
+                    break
                 sleep(self.cfg.mujoco.physics_dt * self.cfg.mujoco.decimation)
                 self.update_state()
                 dof_targets = self.policy_step()

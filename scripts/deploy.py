@@ -10,15 +10,17 @@ group.add_argument("--task", type=str, help="Name of the configuration file.")
 group.add_argument("-l", "--list", action="store_true", dest="list_tasks",
                    default=False, help="list available tasks")
 
-parser.add_argument("--net", type=str, default="127.0.0.1",
-                    help="Network interface for SDK communication.")
 parser.add_argument("--mujoco", action="store_true", default=False,
                     help="deploy in mujoco simulation")
-parser.add_argument("--webots", action="store_true", default=False,
-                    help="deploy in webots simulation")
 parser.add_argument(
     "--device", type=str, default="cpu",
     help="Device to run the evaluation on (e.g., 'cpu', 'cuda')")
+parser.add_argument(
+    "--exit-mode",
+    choices=("walking", "damping"),
+    default=None,
+    help="Robot mode to enter after controller exit (default: task config, walking)",
+)
 args = parser.parse_args()
 
 
@@ -52,6 +54,8 @@ def main():
 
     # Set device for policy
     task_cfg.policy.device = args.device
+    if args.exit_mode is not None:
+        task_cfg.booster.exit_mode = args.exit_mode
 
     # decide how to run based on flags
     if args.mujoco:
@@ -60,26 +64,8 @@ def main():
 
         MujocoController(task_cfg).run()
     else:
-        # initialize network and run robot portal
-        try:
-            from booster_robotics_sdk_python import ChannelFactory  # type: ignore
-            ChannelFactory.Instance().Init(0, args.net)
-        except ImportError as e:
-            print(
-                "Error: booster_robotics_sdk_python is not installed.\n"
-                "Please install it to use real robot deployment.\n"
-                "For MuJoCo simulation, use --mujoco flag instead."
-            )
-            sys.exit(1)
-
-        # adjust ankle dampings for webots
-        if args.webots:
-            ankles = [-8, -7, -2, -1]  # indices of ankle joints
-            for i in ankles:
-                task_cfg.robot.joint_damping[i] = 0.5
-
         from booster_deploy.controllers.booster_robot_controller import BoosterRobotPortal
-        with BoosterRobotPortal(task_cfg, use_sim_time=args.webots) as portal:
+        with BoosterRobotPortal(task_cfg) as portal:
             portal.run()
 
 

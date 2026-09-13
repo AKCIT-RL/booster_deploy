@@ -1,34 +1,52 @@
 from __future__ import annotations
 from dataclasses import MISSING
 import os
-import inspect
+
 import torch
 
 from booster_deploy.controllers.base_controller import BaseController, Policy
-from booster_deploy.controllers.controller_cfg import (
-    ControllerCfg,
-    MujocoControllerCfg,
-    PolicyCfg
-)
-from booster_deploy.robots.booster import K1_CFG
+from booster_deploy.controllers.controller_cfg import PolicyCfg
 from booster_deploy.utils.isaaclab.configclass import configclass
 from booster_deploy.utils.isaaclab import math as lab_math
 from booster_deploy.utils.motion_loader import MotionLoader
+from booster_deploy.utils.policy_runner import create_policy_runner
 
 
 class BeyondMimicPolicy(Policy):
     def __init__(self, cfg: BeyondMimicPolicyCfg, controller: BaseController):
         super().__init__(cfg, controller)
         self.cfg = cfg
-        self._model: torch.jit.ScriptModule = torch.jit.load(
-            f"{self.task_path}/{self.cfg.checkpoint_path}")
-        self._model.to(self.cfg.device).eval()
+        checkpoint_path = self.cfg.checkpoint_path
+        if not os.path.isabs(checkpoint_path):
+            checkpoint_path = os.path.join(self.task_path, checkpoint_path)
+        self._model = create_policy_runner(
+            checkpoint_path,
+            torch.device(self.cfg.device),
+        )
 
         self.robot = controller.robot
 
-        self.action_scale = (
-            0.25 * self.robot.effort_limit / self.robot.joint_stiffness
-        ).to(self.cfg.device)
+        if self.cfg.action_scale_factors is not None:
+            action_scale_factors = torch.tensor(
+                self.cfg.action_scale_factors,
+                dtype=torch.float32,
+                device=self.cfg.device,
+            )
+            self.action_scale = (
+                action_scale_factors
+                * self.robot.effort_limit
+                / self.robot.joint_stiffness
+            ).to(self.cfg.device)
+        elif self.cfg.fixed_action_scale is None:
+            self.action_scale = (
+                0.25 * self.robot.effort_limit / self.robot.joint_stiffness
+            ).to(self.cfg.device)
+        else:
+            self.action_scale = torch.tensor(
+                self.cfg.fixed_action_scale,
+                dtype=torch.float32,
+                device=self.cfg.device,
+            )
 
         self.robot.data.to(self.cfg.device)
 
@@ -38,6 +56,7 @@ class BeyondMimicPolicy(Policy):
             track_joint_names=self.robot.cfg.sim_joint_names,
             default_motion_body_names=self.robot.cfg.sim_body_names,
             default_motion_joint_names=self.robot.cfg.sim_joint_names,
+            frame_range=self.cfg.motion_frame_range,
             align_to_first_frame=True,
             device=self.cfg.device
         )
@@ -47,7 +66,7 @@ class BeyondMimicPolicy(Policy):
 
     def reset(self) -> None:
         self.init_root_yaw_quat_w_inv = lab_math.quat_inv(
-            lab_math.yaw_quat(self.robot.data.root_quat_w))
+            lab_math.yaw_quat_zxy(self.robot.data.root_quat_w))
         self.anchor_index = self.motion.track_body_names.index(
             self.cfg.anchor_body_name)
         self.current_frame = 0
@@ -130,6 +149,12 @@ class BeyondMimicPolicy(Policy):
         self.current_frame += 1
         self.last_action = action
 
+        if (
+            self.cfg.stop_at_motion_end
+            and self.current_frame >= self.motion.time_step_total
+        ):
+            self.controller.stop()
+
         if action is None:
             raise RuntimeError("Underlying model returned None from inference")
 
@@ -161,31 +186,9 @@ class BeyondMimicPolicyCfg(PolicyCfg):
     constructor = BeyondMimicPolicy
     checkpoint_path: str = MISSING
     motion_path: str = MISSING
+    motion_frame_range: tuple[int, int] | list[int] | None = None
+    fixed_action_scale: list[float] | None = None
+    action_scale_factors: list[float] | None = None
+    stop_at_motion_end: bool = False
 
-    anchor_body_name: str = "Trunk"
-
-
-@configclass
-class K1BeyondMimicControllerCfg(ControllerCfg):
-    robot = K1_CFG.replace(     # type: ignore
-        joint_stiffness=[
-            4.0, 4.0,
-            4.0, 4.0, 4.0, 4.0,
-            4.0, 4.0, 4.0, 4.0,
-            80., 80.0, 80., 80., 30., 30.,
-            80., 80.0, 80., 80., 30., 30.,
-        ],
-        joint_damping=[
-            1., 1.,
-            1., 1., 1., 1.,
-            1., 1., 1., 1.,
-            2., 2., 2., 2., 2., 2.,
-            2., 2., 2., 2., 2., 2.,
-        ]
-    )
-    enable_velocity_commands = False
-    policy: BeyondMimicPolicyCfg = BeyondMimicPolicyCfg()
-    mujoco = MujocoControllerCfg(
-        init_pos=[0.0, 0.0, 0.57],
-        visualize_reference_ghost=True,
-    )
+    anchor_body_name: str = "trunk"

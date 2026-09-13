@@ -1,8 +1,10 @@
 # Initial dependency list
 torch
+numpy
 mujoco
 scipy
 evdev
+pyyaml
+onnxruntime
 
-# Robot SDK
-# booster_robotics_sdk_python
+# ROS 2 and booster_interface are provided by the robot runtime.

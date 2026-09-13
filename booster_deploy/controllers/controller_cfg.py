@@ -20,19 +20,27 @@ class MujocoControllerCfg:
     # physics_dt will automatically be set by ControllerCfg
     physics_dt: float = None  # type: ignore
     log_states: Optional[str] = None
+    log_joint_torque_csv: Optional[str] = None
+    log_joint_velocity_csv: Optional[str] = None
+    log_joint_position_csv: Optional[str] = None
     visualize_reference_ghost: bool = False
     ghost_rgba: List[float] = [0.2, 0.8, 0.2, 0.25]
+    show_left_ui: bool = False
+    show_right_ui: bool = False
 
 
 @configclass
 class BoosterRobotControllerCfg:
-    low_state_dt: float = 0.002
     metrics_max_events: int = 2000
+    # Mode to enter after Custom control exits. Supported values: "walking", "damping".
+    exit_mode: str = "walking"
 
 
 @configclass
 class RobotCfg:
     name: str = MISSING
+    # Preparation entered after pressing X. Supported values: "walking", "standing".
+    prepare_mode: str = "walking"
 
     joint_names: list[str] = MISSING
     body_names: list[str] = MISSING
@@ -63,6 +71,10 @@ class RobotCfg:
 @configclass
 class VelocityCommandCfg:
     vx_max: float = 1.0
+    # Direction-specific forward velocity limits.  Keeping these at the
+    # default value preserves the historical symmetric +/-vx_max behavior.
+    vx_forward_max: Optional[float] = None
+    vx_backward_max: Optional[float] = None
     vy_max: float = 1.0
     vyaw_max: float = 1.0
 

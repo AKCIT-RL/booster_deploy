@@ -1,13 +1,72 @@
 # Task-specific models and data (stored per robot/task)
-tasks/*/models/
-tasks/*/motions/
+tasks/**/models/*
+tasks/**/motions/*
 
-.DS_Store
+# K1 BeyondMimic release assets are versioned.
+!tasks/beyond_mimic/robots/k1/models/*
+!tasks/beyond_mimic/robots/k1/motions/*
+# Locomotion release models are versioned when present.
+!tasks/locomotion/robots/k1/models/k1_walk.pt
+!tasks/locomotion/robots/t1/models/t1_walk.pt
+!tasks/locomotion/robots/t2/models/t2_walk.pt
+# T1 BeyondMimic release assets are versioned.
+!tasks/beyond_mimic/robots/t1/models/*
+!tasks/beyond_mimic/robots/t1/motions/*
+# T2 Dance release assets are versioned.
+!tasks/beyond_mimic/robots/t2/models/t2_dance.pt
+!tasks/beyond_mimic/robots/t2/models/t2_dance.onnx
+!tasks/beyond_mimic/robots/t2/motions/t2_dance.npz
+!tasks/beyond_mimic/robots/*/models/.gitkeep
+!tasks/beyond_mimic/robots/*/motions/.gitkeep
+!tasks/locomotion/robots/*/models/.gitkeep
 
-# Common Python temporary files
+# Runtime output
+logs/
+*.log
+
+# Python bytecode and caches
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
 
+# Python build and packaging artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
 
+# Virtual environments and local environment variables
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+!.env.example
+
+# Test, coverage, lint, and type-check caches
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.hypothesis/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# Editors and IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS metadata
+.DS_Store
+Thumbs.db

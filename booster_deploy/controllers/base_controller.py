@@ -87,12 +87,30 @@ class VelocityCommand(Commands):
 
     def __init__(self, cfg: VelocityCommandCfg) -> None:
         self.vx_max = cfg.vx_max
+        self.vx_forward_max = (
+            cfg.vx_forward_max if cfg.vx_forward_max is not None else cfg.vx_max
+        )
+        self.vx_backward_max = (
+            cfg.vx_backward_max if cfg.vx_backward_max is not None else cfg.vx_max
+        )
         self.vy_max = cfg.vy_max
         self.vyaw_max = cfg.vyaw_max
 
         self.lin_vel_x: float = 0.0
         self.lin_vel_y: float = 0.0
         self.ang_vel_yaw: float = 0.0
+
+    def clamp_vx(self, value: float) -> float:
+        """Clip vx with separate forward and backward limits."""
+        if value >= 0.0:
+            return min(value, self.vx_forward_max)
+        return max(value, -self.vx_backward_max)
+
+    def scale_vx(self, normalized_value: float) -> float:
+        """Scale a normalized vx command with direction-specific factors."""
+        if normalized_value >= 0.0:
+            return normalized_value * self.vx_forward_max
+        return normalized_value * self.vx_backward_max
 
 
 class Policy:

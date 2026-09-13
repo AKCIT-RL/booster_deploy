@@ -12,12 +12,41 @@ class MotionLoader:
                  *,
                  default_motion_body_names: Sequence[str] | None = None,
                  default_motion_joint_names: Sequence[str] | None = None,
+                 frame_range: Sequence[int] | None = None,
                  align_to_first_frame: bool = False,
                  device: str = "cpu"):
         assert os.path.isfile(motion_file), f"Invalid file path: {motion_file}"
         self.device = device
         data = np.load(motion_file)
         self.fps = data["fps"]
+
+        total_frames = int(data["joint_pos"].shape[0])
+        if frame_range is None:
+            frame_start, frame_end = 0, total_frames
+        else:
+            if len(frame_range) != 2:
+                raise ValueError(
+                    f"frame_range must contain [start, end], got {frame_range!r}"
+                )
+            frame_start, frame_end = frame_range
+            if not isinstance(frame_start, int) or not isinstance(frame_end, int):
+                raise TypeError(
+                    "frame_range must contain integer frame indexes, got "
+                    f"{frame_range!r}"
+                )
+            # Negative end indexes select an inclusive frame from the end;
+            # convert them to the exclusive boundary expected by ``slice``.
+            if frame_end < 0:
+                frame_end = total_frames + frame_end + 1
+            if not 0 <= frame_start < frame_end <= total_frames:
+                raise ValueError(
+                    "frame_range must satisfy "
+                    f"0 <= start < end <= {total_frames} (or a valid negative "
+                    "end index), "
+                    f"got {frame_range!r}"
+                )
+        self.source_frame_range = (frame_start, frame_end)
+        frame_slice = slice(frame_start, frame_end)
 
         if "body_names" in data:
             self._body_names = data["body_names"].tolist()
@@ -63,24 +92,24 @@ class MotionLoader:
                 dtype=torch.long, device=device
             )
         self.joint_pos = torch.tensor(
-            data["joint_pos"],
+            data["joint_pos"][frame_slice],
             dtype=torch.float32, device=device)[:, self._joint_indexes]
         self.joint_vel = torch.tensor(
-            data["joint_vel"],
+            data["joint_vel"][frame_slice],
             dtype=torch.float32, device=device)[:, self._joint_indexes]
         self._body_pos_w = torch.tensor(
-            data["body_pos_w"], dtype=torch.float32, device=device)
+            data["body_pos_w"][frame_slice], dtype=torch.float32, device=device)
         self._body_quat_w = torch.tensor(
-            data["body_quat_w"], dtype=torch.float32, device=device)
+            data["body_quat_w"][frame_slice], dtype=torch.float32, device=device)
         self._body_lin_vel_w = torch.tensor(
-            data["body_lin_vel_w"], dtype=torch.float32, device=device)
+            data["body_lin_vel_w"][frame_slice], dtype=torch.float32, device=device)
         self._body_ang_vel_w = torch.tensor(
-            data["body_ang_vel_w"], dtype=torch.float32, device=device)
+            data["body_ang_vel_w"][frame_slice], dtype=torch.float32, device=device)
 
         if align_to_first_frame:
             init_root_pos_xy = self._body_pos_w[:1, :1].clone()
             init_root_pos_xy[:, :, 2] = 0.0
-            init_root_quat_yaw = lab_math.yaw_quat(self._body_quat_w[:1, :1])
+            init_root_quat_yaw = lab_math.yaw_quat_zxy(self._body_quat_w[:1, :1])
             self._body_pos_w, self._body_quat_w = lab_math.subtract_frame_transforms(
                 init_root_pos_xy,
                 init_root_quat_yaw.repeat(*self._body_quat_w.shape[:2], 1),
