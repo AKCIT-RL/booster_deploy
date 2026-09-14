@@ -1,0 +1,80 @@
+<svg viewBox="0 0 940 640" xmlns="http://www.w3.org/2000/svg" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, sans-serif">
+  <rect x="0" y="0" width="940 " height="640" fill="#ffffff"/>
+  <rect x="0" y="0" width="940" height="640" fill="#ffffff"/>
+  <text x="470" y="30" text-anchor="middle" font-size="20" font-weight="700" fill="#1a1a1a">Sequência: entrada e saída do modo CUSTOM</text>
+
+  <!-- Lifelines -->
+  <g font-size="11" font-weight="700" fill="#334155">
+    <text x="110" y="60" text-anchor="middle">Operador</text>
+    <text x="330" y="60" text-anchor="middle">Portal (pai)</text>
+    <text x="560" y="60" text-anchor="middle">RPC (B1LocoClient)</text>
+    <text x="790" y="60" text-anchor="middle">/joint_ctrl</text>
+  </g>
+  <line x1="110" y1="70" x2="110" y2="600" stroke="#cbd5e1" stroke-width="1.5"/>
+  <line x1="330" y1="70" x2="330" y2="600" stroke="#cbd5e1" stroke-width="1.5"/>
+  <line x1="560" y1="70" x2="560" y2="600" stroke="#cbd5e1" stroke-width="1.5"/>
+  <line x1="790" y1="70" x2="790" y2="600" stroke="#cbd5e1" stroke-width="1.5"/>
+
+  <!-- pré-condição -->
+  <rect x="60" y="80" width="820" height="26" rx="4" fill="#f1f5f9" stroke="#94a3b8"/>
+  <text x="470" y="98" text-anchor="middle" font-size="10" fill="#334155">Pré-condição: robô já está em modo Prepare (fora do escopo do script)</text>
+
+  <!-- step 1 -->
+  <line x1="110" y1="140" x2="325" y2="140" stroke="#3b82f6" stroke-width="2" marker-end="url(#c1)"/>
+  <text x="220" y="133" text-anchor="middle" font-size="9" fill="#1e3a8a">1ª confirmação (custom mode)</text>
+
+  <rect x="250" y="150" width="160" height="30" rx="5" fill="#e2e8f0" stroke="#64748b"/>
+  <text x="330" y="169" text-anchor="middle" font-size="9" fill="#1e293b">espera assinante /joint_ctrl</text>
+
+  <line x1="330" y1="180" x2="785" y2="180" stroke="#0ea5e9" stroke-width="2" marker-end="url(#c2)"/>
+  <text x="560" y="173" text-anchor="middle" font-size="9" fill="#075985">publica LowCmd: pose medida + ganhos prepare_state</text>
+
+  <line x1="330" y1="210" x2="555" y2="210" stroke="#f97316" stroke-width="2" marker-end="url(#c3)"/>
+  <text x="440" y="203" text-anchor="middle" font-size="9" fill="#9a3412">ChangeMode(kCustom)  [RPC]</text>
+
+  <rect x="470" y="218" width="180" height="24" rx="4" fill="#ffedd5" stroke="#f97316"/>
+  <text x="560" y="234" text-anchor="middle" font-size="9" fill="#9a3412">robô assume controle CUSTOM</text>
+
+  <rect x="250" y="256" width="160" height="46" rx="5" fill="#e2e8f0" stroke="#64748b"/>
+  <text x="330" y="274" text-anchor="middle" font-size="9" fill="#1e293b">rampa np.linspace</text>
+  <text x="330" y="288" text-anchor="middle" font-size="9" fill="#1e293b">500 passos × 2 ms (1 s total)</text>
+
+  <line x1="330" y1="302" x2="785" y2="302" stroke="#0ea5e9" stroke-width="2" marker-end="url(#c2)"/>
+  <text x="560" y="295" text-anchor="middle" font-size="9" fill="#075985">publica LowCmd a cada passo → prepare_state.joint_pos</text>
+
+  <rect x="60" y="316" width="820" height="22" rx="4" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="470" y="331" text-anchor="middle" font-size="10" fill="#14532d">Robô em CUSTOM, na pose de preparo</text>
+
+  <!-- step 2 -->
+  <line x1="110" y1="365" x2="325" y2="365" stroke="#3b82f6" stroke-width="2" marker-end="url(#c1)"/>
+  <text x="220" y="358" text-anchor="middle" font-size="9" fill="#1e3a8a">2ª confirmação (rl gait)</text>
+
+  <rect x="250" y="373" width="160" height="34" rx="5" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="330" y="391" text-anchor="middle" font-size="9" fill="#14532d">fork processo filho</text>
+  <text x="330" y="401" text-anchor="middle" font-size="8" fill="#166534">BoosterRobotController</text>
+
+  <rect x="60" y="418" width="820" height="70" rx="6" fill="#f0fdf4" stroke="#16a34a" stroke-dasharray="4 3"/>
+  <text x="470" y="436" text-anchor="middle" font-size="11" font-weight="600" fill="#14532d">Loop de política ativo — 50 Hz</text>
+  <text x="470" y="453" text-anchor="middle" font-size="9" fill="#166534">filho: update_state → inference → ctrl_step (kp/kd de RobotCfg.joint_stiffness/damping)</text>
+  <text x="470" y="468" text-anchor="middle" font-size="9" fill="#166534">pai: publica LowCmd resultante em /joint_ctrl</text>
+
+  <!-- exit -->
+  <line x1="110" y1="510" x2="325" y2="510" stroke="#ef4444" stroke-width="2" marker-end="url(#c4)"/>
+  <text x="220" y="503" text-anchor="middle" font-size="9" fill="#7f1d1d">Ctrl-C / exit_event</text>
+
+  <rect x="250" y="518" width="160" height="30" rx="5" fill="#fee2e2" stroke="#dc2626"/>
+  <text x="330" y="537" text-anchor="middle" font-size="9" fill="#7f1d1d">join filho (timeout 2s)</text>
+
+  <line x1="330" y1="558" x2="555" y2="558" stroke="#f97316" stroke-width="2" marker-end="url(#c3)"/>
+  <text x="440" y="551" text-anchor="middle" font-size="9" fill="#9a3412">ChangeMode(kWalking)  [RPC]</text>
+
+  <rect x="60" y="570" width="820" height="24" rx="4" fill="#fef2f2" stroke="#f87171"/>
+  <text x="470" y="586" text-anchor="middle" font-size="10" fill="#7f1d1d">Sem rampa de torque na saída — último LowCmd continua valendo até o modo mudar</text>
+
+  <defs>
+    <marker id="c1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#3b82f6"/></marker>
+    <marker id="c2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#0ea5e9"/></marker>
+    <marker id="c3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#f97316"/></marker>
+    <marker id="c4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#ef4444"/></marker>
+  </defs>
+</svg>
