@@ -1,0 +1,94 @@
+<svg viewBox="0 0 940 620" xmlns="http://www.w3.org/2000/svg" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, sans-serif">
+  <rect x="0" y="0" width="940" height="620" fill="#ffffff"/>
+  <text x="470" y="32" text-anchor="middle" font-size="20" font-weight="700" fill="#1a1a1a">Fluxo de dados — robô real (dois processos)</text>
+
+  <!-- Process boundary -->
+  <line x1="470" y1="60" x2="470" y2="560" stroke="#94a3b8" stroke-width="2" stroke-dasharray="6 4"/>
+  <text x="480" y="75" font-size="11" fill="#64748b">fronteira de processo (fork)</text>
+  <text x="250" y="75" text-anchor="middle" font-size="13" font-weight="700" fill="#334155">Processo pai — BoosterRobotPortal</text>
+  <text x="690" y="75" text-anchor="middle" font-size="13" font-weight="700" fill="#334155">Processo filho — BoosterRobotController</text>
+
+  <!-- Left column: pai -->
+  <rect x="60" y="95" width="180" height="46" rx="6" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="150" y="114" text-anchor="middle" font-size="11" font-weight="600" fill="#1e3a8a">/low_state</text>
+  <text x="150" y="129" text-anchor="middle" font-size="9" fill="#1e40af">500 Hz · BEST_EFFORT</text>
+
+  <line x1="150" y1="141" x2="150" y2="163" stroke="#64748b" stroke-width="2" marker-end="url(#a1)"/>
+
+  <rect x="45" y="165" width="210" height="52" rx="6" fill="#e2e8f0" stroke="#64748b"/>
+  <text x="150" y="184" text-anchor="middle" font-size="11" font-weight="600" fill="#1e293b">thread low_state_executor</text>
+  <text x="150" y="199" text-anchor="middle" font-size="9" fill="#334155">SingleThreadedExecutor</text>
+  <text x="150" y="211" text-anchor="middle" font-size="9" fill="#334155">dedicado, não bloqueia o resto</text>
+
+  <line x1="150" y1="217" x2="150" y2="239" stroke="#64748b" stroke-width="2" marker-end="url(#a1)"/>
+
+  <rect x="35" y="241" width="230" height="66" rx="6" fill="#e2e8f0" stroke="#64748b"/>
+  <text x="150" y="260" text-anchor="middle" font-size="11" font-weight="600" fill="#1e293b">_low_state_handler</text>
+  <text x="150" y="274" text-anchor="middle" font-size="9" fill="#334155">extrai rpy, gyro,</text>
+  <text x="150" y="286" text-anchor="middle" font-size="9" fill="#334155">motor_state_serial[i].q/dq/tau_est</text>
+  <text x="150" y="298" text-anchor="middle" font-size="9" fill="#334155">também lê joystick → synced_command</text>
+
+  <line x1="150" y1="307" x2="150" y2="329" stroke="#64748b" stroke-width="2" marker-end="url(#a1)"/>
+
+  <rect x="45" y="331" width="210" height="44" rx="6" fill="#fef3c7" stroke="#d97706"/>
+  <text x="150" y="349" text-anchor="middle" font-size="11" font-weight="600" fill="#78350f">SyncedArray("state")</text>
+  <text x="150" y="363" text-anchor="middle" font-size="9" fill="#92400e">SharedMemory + flock</text>
+
+  <!-- crossing to child -->
+  <line x1="255" y1="353" x2="415" y2="353" stroke="#d97706" stroke-width="2.5" marker-end="url(#a2)"/>
+
+  <!-- publisher side (pai) -->
+  <rect x="45" y="470" width="210" height="46" rx="6" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="150" y="489" text-anchor="middle" font-size="11" font-weight="600" fill="#1e3a8a">/joint_ctrl</text>
+  <text x="150" y="504" text-anchor="middle" font-size="9" fill="#1e40af">50 Hz · RELIABLE</text>
+
+  <rect x="45" y="401" width="210" height="46" rx="6" fill="#fef3c7" stroke="#d97706"/>
+  <text x="150" y="420" text-anchor="middle" font-size="11" font-weight="600" fill="#78350f">SyncedArray("action")</text>
+  <text x="150" y="434" text-anchor="middle" font-size="9" fill="#92400e">dof_target, stiffness, damping</text>
+
+  <line x1="150" y1="447" x2="150" y2="470" stroke="#64748b" stroke-width="2" marker-end="url(#a1)"/>
+  <line x1="415" y1="424" x2="255" y2="424" stroke="#d97706" stroke-width="2.5" marker-end="url(#a2)"/>
+
+  <!-- Right column: filho -->
+  <rect x="480" y="95" width="220" height="46" rx="6" fill="#fef3c7" stroke="#d97706"/>
+  <text x="590" y="114" text-anchor="middle" font-size="11" font-weight="600" fill="#78350f">SyncedArray("state") lido</text>
+  <text x="590" y="129" text-anchor="middle" font-size="9" fill="#92400e">joint_pos, joint_vel, rpy, gyro...</text>
+
+  <line x1="590" y1="141" x2="590" y2="163" stroke="#64748b" stroke-width="2" marker-end="url(#a1)"/>
+
+  <rect x="465" y="165" width="250" height="66" rx="6" fill="#d1fae5" stroke="#059669"/>
+  <text x="590" y="184" text-anchor="middle" font-size="11" font-weight="600" fill="#064e3b">update_state()</text>
+  <text x="590" y="199" text-anchor="middle" font-size="9" fill="#065f46">rpy → quat_from_euler_xyz</text>
+  <text x="590" y="211" text-anchor="middle" font-size="9" fill="#065f46">lin_vel mundo → corpo (quat_apply_inverse)</text>
+  <text x="590" y="223" text-anchor="middle" font-size="9" fill="#065f46">root_pos_w / root_lin_vel_w = 0 (sem odometria)</text>
+
+  <line x1="590" y1="231" x2="590" y2="253" stroke="#64748b" stroke-width="2" marker-end="url(#a1)"/>
+
+  <rect x="465" y="255" width="250" height="46" rx="6" fill="#d1fae5" stroke="#059669"/>
+  <text x="590" y="274" text-anchor="middle" font-size="11" font-weight="600" fill="#064e3b">policy.inference()</text>
+  <text x="590" y="289" text-anchor="middle" font-size="9" fill="#065f46">50 Hz · retorna dof_targets</text>
+
+  <line x1="590" y1="301" x2="590" y2="323" stroke="#64748b" stroke-width="2" marker-end="url(#a1)"/>
+
+  <rect x="465" y="325" width="250" height="66" rx="6" fill="#d1fae5" stroke="#059669"/>
+  <text x="590" y="344" text-anchor="middle" font-size="11" font-weight="600" fill="#064e3b">ctrl_step(dof_targets)</text>
+  <text x="590" y="358" text-anchor="middle" font-size="9" fill="#065f46">escreve q, kp, kd em cada MotorCmd</text>
+  <text x="590" y="371" text-anchor="middle" font-size="9" fill="#065f46">(kp/kd vêm de RobotCfg.joint_stiffness/damping)</text>
+
+  <line x1="590" y1="391" x2="590" y2="413" stroke="#d97706" stroke-width="2.5" marker-end="url(#a2)"/>
+
+  <rect x="480" y="415" width="220" height="46" rx="6" fill="#fef3c7" stroke="#d97706"/>
+  <text x="590" y="434" text-anchor="middle" font-size="11" font-weight="600" fill="#78350f">SyncedArray("action") escrito</text>
+  <text x="590" y="449" text-anchor="middle" font-size="9" fill="#92400e">devolvido ao pai, que publica</text>
+
+  <rect x="480" y="497" width="220" height="46" rx="6" fill="#e2e8f0" stroke="#64748b"/>
+  <text x="590" y="516" text-anchor="middle" font-size="11" font-weight="600" fill="#1e293b">joystick / RemoteControlService</text>
+  <text x="590" y="531" text-anchor="middle" font-size="9" fill="#334155">vx, vy, vyaw → synced_command</text>
+
+  <text x="470" y="590" text-anchor="middle" font-size="11" fill="#64748b">Placas do robô fazem o PD; o processo filho só decide o alvo de posição (q) e os ganhos a enviar.</text>
+
+  <defs>
+    <marker id="a1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#64748b"/></marker>
+    <marker id="a2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#d97706"/></marker>
+  </defs>
+</svg>

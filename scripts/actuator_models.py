@@ -1,0 +1,330 @@
+"""Actuator and PD models shared by every viability experiment.
+
+Task-neutral on purpose. These helpers started inside
+tasks/mimickit_steering/controllers.py, which was fine while one task used them;
+docs/12 runs the same matrix against Booster's own t1_walk policy, and a task
+depending on a sibling task to do it was the wrong shape. Nothing here is
+specific to MimicKit: every class subclasses MujocoController and only touches
+the damping term, the torque ceiling and the T-N curve.
+
+THREE PD SCHEMES
+
+A position-target policy is half of a closed loop; the PD controller is the
+other half. Change where the damping term is applied and the same joint targets
+produce different motion. This module makes that choice explicit and switchable
+instead of implicit in whichever booster_deploy revision happens to be checked
+out.
+
+    ZeroDampingController      no damping anywhere
+    ExplicitPDController       tau = kp*(q* - q) - kd*qd, every substep
+    ImplicitDampingController  tau = kp*(q* - q); kd as MuJoCo joint damping
+
+All three share one ctrl_step and differ only in that one term, so a comparison
+between them isolates it. The T-N torque limit is shared and driven by the same
+RobotCfg fields the upstream controller reads, so it is not a hidden variable.
+
+WHY THIS EXISTS
+
+booster_deploy/controllers/mujoco_controller.py ctrl_step contains, on this
+fork:
+
+    kd = np.zeros_like(kp)
+
+The two schemes are genuinely different: an explicit -kd*qd torque is computed
+from the velocity at the START of a substep and applied as an external force, so
+at a foot in contact it shows up as a horizontal contact force and the foot
+slides. MuJoCo's joint damping is folded into the implicit integration of the
+same substep, which is unconditionally stable and produces no such force.
+
+But the premise that the MJCF supplies the damping does not hold for the T1:
+`mj_model.dof_damping[6:]` is all zeros with booster_assets T1_23dof.xml, so
+RobotCfg.joint_damping is applied NOWHERE and the T1 runs completely undamped.
+See docs/05 pitfall 1 and the Kd section of docs/06.
+
+ImplicitDampingController is that intent made to actually happen: it writes
+RobotCfg.joint_damping into mj_model.dof_damping at construction.
+ExplicitPDController is the hardware analogue, where the motor board closes
+kp(q*-q) + kd(0-dq) itself. ZeroDampingController is the fork's current
+effective behaviour, kept so it can be measured rather than assumed.
+
+THREE TORQUE CEILINGS
+
+apply_effort_source selects between them; they are pinned as named constants in
+booster_deploy/robots/t1_actuators.py rather than read off RobotCfg, because
+upstream 7bb1462e repointed T1_23DOF_CFG.effort_limit at the URDF values and
+reading it would silently collapse "derated" onto "urdf".
+"""
+from __future__ import annotations
+
+import mujoco
+import numpy as np
+import torch
+
+from booster_deploy.controllers.mujoco_controller import MujocoController
+
+EFFORT_URDF = "urdf"
+EFFORT_DERATED = "derated"
+EFFORT_CATALOG = "catalog"
+EFFORT_SOURCES = (EFFORT_URDF, EFFORT_DERATED, EFFORT_CATALOG)
+
+
+def apply_effort_source(cfg, source):
+    """Choose which torque ceiling the MuJoCo PD loop clips at.
+
+    ctrl_step clips at RobotCfg.effort_limit, and the task restates the URDF
+    limits (knee 130.5 Nm) because that is what the policy was trained against.
+    The firmware clips at Booster's derated operating limits instead
+    (T1_EFFORT_FIRMWARE, knee 60 Nm), and those are never sent over the
+    wire - booster_robot_controller.ctrl_step publishes only q, kp and kd, so the
+    ceiling on hardware is whatever the motor board enforces.
+
+    "derated" therefore isolates one hardware constraint the way --degrade
+    zero_root isolates the other: same policy, same state, only the torque
+    ceiling moved to what the robot will actually deliver.
+
+    Caveat: a flat clip is the optimistic model. Real actuators fall off with
+    speed, which is what RobotCfg.velocity_limit / knee_point_velocity describe
+    (both None here, so the T-N curve is off). A policy that survives this is not
+    yet proven to survive the real torque-speed envelope.
+    """
+    from booster_deploy.robots import t1_actuators as act
+
+    if (source == EFFORT_URDF):
+        cfg.robot.effort_limit = list(act.T1_EFFORT_URDF)
+        return cfg
+    if (source == EFFORT_DERATED):
+        cfg.robot.effort_limit = list(act.T1_EFFORT_FIRMWARE)
+        return cfg
+    if (source == EFFORT_CATALOG):
+        cfg.robot.effort_limit = list(act.T1_CATALOG_PEAK_TORQUE)
+        return cfg
+    raise ValueError("unknown effort source: {}".format(source))
+
+
+def apply_tn_curve(cfg, enabled):
+    """Turn on the torque-speed falloff the actuators actually have.
+
+    RobotCfg.velocity_limit and knee_point_velocity are None for the T1, so
+    ctrl_step's piecewise-linear T-N limit never runs and every experiment so far
+    clipped torque at a FLAT ceiling. That is the optimistic model: a real
+    actuator delivers full torque only up to its rated speed and decays to zero at
+    its no-load speed.
+
+    The numbers come from the manufacturer's own table
+    (docs/info_sources/boosteractuatordata.pdf) via t1_actuators.T1_CATALOG_*: rated
+    speed becomes knee_point_velocity, peak speed becomes velocity_limit. They are
+    applied here rather than on T1_23DOF_CFG so that turning this on stays an
+    explicit experimental choice and no existing task changes behaviour silently.
+
+    Worth knowing before reading a result: hip-roll, hip-yaw and waist have a peak
+    speed of only 70 rpm = 7.33 rad/s, the lowest on the robot, so they are where
+    the curve bites first.
+    """
+    if (not enabled):
+        return cfg
+
+    from booster_deploy.robots import t1_actuators as act
+    cfg.robot.velocity_limit = list(act.T1_CATALOG_VELOCITY_LIMIT)
+    cfg.robot.knee_point_velocity = list(act.T1_CATALOG_KNEE_POINT_VELOCITY)
+    return cfg
+
+
+DEGRADE_NONE = "none"
+DEGRADE_ZERO_ROOT = "zero_root"
+DEGRADE_MODES = (DEGRADE_NONE, DEGRADE_ZERO_ROOT)
+
+
+def make_degraded(base_cls, degrade):
+    """Subclass whose update_state reports what the HARDWARE reports.
+
+    booster_robot_controller.py:244-249 fills root_pos_w and root_lin_vel_w with
+    np.zeros(3) because the T1 has no sensor for either. MuJoCo supplies both, so
+    a --mujoco run validates the policy against its own training assumptions
+    rather than against the deployment target. This puts the hardware's gap back
+    in, where falling is free.
+
+    For t1_mimickit_steering that is 4 of 200 observation dimensions: root_h and
+    the three of root_vel. The other 196 are invariant to the root's position and
+    linear velocity, so those 4 carry all of the translational information - which
+    is exactly why they are also the ones no onboard sensor can provide.
+
+    For Booster's own t1_walk this is a NO-OP, and that is the point of running it
+    there: its 720-dim observation (72 per frame x 10 history) is built from the
+    IMU, the encoders and its own last action, and contains no root position or
+    linear velocity at all. A policy shaped that way cannot be hurt by the gap.
+    See docs/12.
+    """
+    if (degrade == DEGRADE_NONE):
+        return base_cls
+    if (degrade != DEGRADE_ZERO_ROOT):
+        raise ValueError("unknown degrade mode: {}".format(degrade))
+
+    class Degraded(base_cls):
+        def update_state(self):
+            super().update_state()
+            self.robot.data.root_pos_w.zero_()
+            self.robot.data.root_lin_vel_b.zero_()
+
+    Degraded.__name__ = "ZeroRoot{}".format(base_cls.__name__)
+    return Degraded
+
+
+DAMPING_EXPLICIT = "explicit"
+DAMPING_IMPLICIT = "implicit"
+DAMPING_NONE = "none"
+
+
+class ActuatorPDController(MujocoController):
+    """MujocoController with the damping scheme as an explicit choice.
+
+    Subclasses set `damping_mode`. ctrl_step is reimplemented rather than
+    inherited so that all three variants stay identical apart from that term,
+    whichever booster_deploy revision this runs against.
+    """
+
+    damping_mode = DAMPING_EXPLICIT
+
+    def __init__(self, cfg):
+        super().__init__(cfg)
+
+        kd = self.robot.joint_damping.numpy().astype(np.float64)
+        # dof_damping is indexed by DOF: 0-5 are the floating base
+        model_damping = self.mj_model.dof_damping[6:]
+        if (model_damping.shape[0] != kd.shape[0]):
+            raise ValueError(
+                "asset has {} joint DOFs but the robot config lists {} damping "
+                "values".format(model_damping.shape[0], kd.shape[0]))
+
+        if (self.damping_mode == DAMPING_IMPLICIT):
+            # what the fork's comment assumes the XML already provides
+            model_damping[:] = kd
+        else:
+            # explicit and none both apply nothing through the solver; whatever
+            # the MJCF declared is cleared so the scheme is the only difference
+            model_damping[:] = 0.0
+
+        self._pd_kd = kd if self.damping_mode == DAMPING_EXPLICIT else np.zeros_like(kd)
+
+    def describe_pd(self):
+        kd = self.robot.joint_damping.numpy()
+        return ("{}: PD kd {} | MuJoCo joint damping {} | effort limit "
+                "{:.1f}..{:.1f} Nm | T-N curve {}".format(
+                    type(self).__name__,
+                    "active" if self.damping_mode == DAMPING_EXPLICIT else "zero",
+                    "active" if self.damping_mode == DAMPING_IMPLICIT else "zero",
+                    float(self.robot.effort_limit.min()),
+                    float(self.robot.effort_limit.max()),
+                    "on" if getattr(self.robot, "velocity_limit", None) is not None
+                    else "off"))
+
+    def ctrl_step(self, dof_targets: torch.Tensor):
+        dof_targets = dof_targets.cpu().numpy()  # type: ignore
+        self.log_states(dof_targets)
+        if self.vel_command is not None:
+            self.update_vel_command()
+
+        dof_pos = self.mj_data.qpos.astype(np.float32)[7:]
+        dof_vel = self.mj_data.qvel.astype(np.float32)[6:]
+        kp = self.robot.joint_stiffness.numpy()
+        kd = self._pd_kd
+        effort_limit = self.robot.effort_limit.numpy()
+
+        velocity_limit = getattr(self.robot, "velocity_limit", None)
+        knee = getattr(self.robot, "knee_point_velocity", None)
+        if (velocity_limit is not None):
+            velocity_limit = velocity_limit.numpy()
+            knee = knee.numpy()
+            denom = np.maximum(velocity_limit - knee, 1e-6)
+
+        for _ in range(self.decimation):
+            torque = kp * (dof_targets - dof_pos) - kd * dof_vel
+            if (velocity_limit is not None):
+                # piecewise-linear torque-speed limit, same form the upstream
+                # controller uses so it is not a difference between variants
+                tau_linear = effort_limit * (velocity_limit - np.abs(dof_vel)) / denom
+                max_torque = np.clip(tau_linear, 0.0, effort_limit)
+            else:
+                max_torque = effort_limit
+            self.mj_data.ctrl = np.clip(torque, -max_torque, max_torque)
+            mujoco.mj_step(self.mj_model, self.mj_data)
+            dof_pos = self.mj_data.qpos.astype(np.float32)[7:]
+            dof_vel = self.mj_data.qvel.astype(np.float32)[6:]
+
+
+
+class ExplicitPDController(ActuatorPDController):
+    """kd inside the PD loop. What the policy was trained and validated against.
+
+    tau = kp*(q* - q) - kd*qd, recomputed every physics substep. The damping
+    torque is an external force applied from the velocity at the start of the
+    substep, which is where the sliding-foot objection comes from.
+    """
+    damping_mode = DAMPING_EXPLICIT
+
+
+class ImplicitDampingController(ActuatorPDController):
+    """kd as MuJoCo joint damping. The AKCIT fork's stated intent.
+
+    tau = kp*(q* - q) only; RobotCfg.joint_damping is written into
+    mj_model.dof_damping so the solver integrates it implicitly. Same numbers as
+    ExplicitPDController, different integration - that is the whole comparison.
+    """
+    damping_mode = DAMPING_IMPLICIT
+
+
+class ZeroDampingController(ActuatorPDController):
+    """No damping at all. The fork's CURRENT effective behaviour on this asset.
+
+    Not a design, a measurement: the fork zeroes kd in the PD loop and expects
+    the MJCF to supply it, and T1_23dof.xml supplies none. Kept as a named
+    variant so the cost of that gap is a number rather than an argument.
+    """
+    damping_mode = DAMPING_NONE
+
+
+CONTROLLERS = {
+    "explicit": ExplicitPDController,
+    "implicit": ImplicitDampingController,
+    "none": ZeroDampingController,
+}
+def apply_rate(cfg, policy_dt, decimation):
+    """Override control rate and physics substeps, in the order that works.
+
+    ControllerCfg.__post_init__ derives physics_dt = policy_dt / decimation and
+    has already run by the time we get cfg, so both fields have to be written and
+    physics_dt recomputed by hand. Getting the order wrong is silent: the run
+    proceeds at a physics rate nobody asked for. Same trap the steering task
+    documents at mimickit_steering.py:199-203.
+    """
+    if (policy_dt is None and decimation is None):
+        return cfg
+
+    if (decimation is not None):
+        cfg.mujoco.decimation = decimation
+    if (policy_dt is not None):
+        cfg.policy_dt = policy_dt
+        if (hasattr(cfg.policy, "policy_dt")):
+            cfg.policy.policy_dt = policy_dt
+
+    cfg.mujoco.physics_dt = cfg.policy_dt / cfg.mujoco.decimation
+    return cfg
+
+
+def apply_gains(cfg, which):
+    """Swap the task's PD gains for the robot-config defaults.
+
+    T1WalkControllerCfg overrides joint_stiffness/joint_damping with its own
+    200/5; robots/t1.py ships a different set entirely, the one that solves to
+    f_n = 4 Hz and zeta = 1.5 (docs/06). Both ship in the same release, so which
+    one a policy runs under is a real experimental axis rather than a detail.
+    """
+    if (which == "task"):
+        return cfg
+    if (which != "default"):
+        raise ValueError("unknown gains source: {}".format(which))
+
+    from booster_deploy.robots.t1 import T1_23DOF_CFG
+    cfg.robot.joint_stiffness = list(T1_23DOF_CFG.joint_stiffness)
+    cfg.robot.joint_damping = list(T1_23DOF_CFG.joint_damping)
+    return cfg
+

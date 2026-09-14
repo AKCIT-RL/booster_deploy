@@ -1,0 +1,91 @@
+<svg viewBox="0 0 900 560" xmlns="http://www.w3.org/2000/svg" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, sans-serif">
+  <rect x="0" y="0" width="900" height="560" fill="#ffffff"/>
+
+  <text x="450" y="34" text-anchor="middle" font-size="20" font-weight="700" fill="#1a1a1a">Dois planos de comunicação sobre o mesmo transporte (Fast DDS, domain 0)</text>
+
+  <!-- Host boxes -->
+  <rect x="30" y="70" width="290" height="300" rx="10" fill="#f5f7fa" stroke="#9aa5b1" stroke-width="1.5"/>
+  <text x="175" y="95" text-anchor="middle" font-size="14" font-weight="700" fill="#334155">Host: processo booster_deploy</text>
+
+  <rect x="55" y="112" width="240" height="46" rx="6" fill="#e2e8f0" stroke="#64748b"/>
+  <text x="175" y="131" text-anchor="middle" font-size="12" fill="#1e293b">scripts/deploy.py</text>
+  <text x="175" y="146" text-anchor="middle" font-size="10" fill="#475569">ChannelFactory.Init(0, --net)</text>
+
+  <rect x="55" y="170" width="240" height="70" rx="6" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="175" y="190" text-anchor="middle" font-size="12" font-weight="600" fill="#1e3a8a">BoosterRobotPortal</text>
+  <text x="175" y="205" text-anchor="middle" font-size="10" fill="#1e40af">rclpy: publisher /joint_ctrl</text>
+  <text x="175" y="219" text-anchor="middle" font-size="10" fill="#1e40af">rclpy: subscriber /low_state</text>
+
+  <rect x="55" y="252" width="240" height="70" rx="6" fill="#ffedd5" stroke="#f97316"/>
+  <text x="175" y="272" text-anchor="middle" font-size="12" font-weight="600" fill="#9a3412">B1LocoClient</text>
+  <text x="175" y="287" text-anchor="middle" font-size="10" fill="#9a3412">booster_robotics_sdk_python</text>
+  <text x="175" y="301" text-anchor="middle" font-size="10" fill="#9a3412">ChangeMode / GetStatus / Move</text>
+
+  <text x="175" y="345" text-anchor="middle" font-size="10" fill="#64748b">(BoosterRobotController roda em</text>
+  <text x="175" y="358" text-anchor="middle" font-size="10" fill="#64748b">processo filho — ver doc 04)</text>
+
+  <!-- DDS bus -->
+  <rect x="360" y="150" width="180" height="220" rx="10" fill="#f8fafc" stroke="#334155" stroke-width="2" stroke-dasharray="4 3"/>
+  <text x="450" y="172" text-anchor="middle" font-size="13" font-weight="700" fill="#0f172a">Fast DDS</text>
+  <text x="450" y="188" text-anchor="middle" font-size="10" fill="#334155">domain_id = 0</text>
+
+  <rect x="378" y="205" width="144" height="52" rx="6" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="450" y="225" text-anchor="middle" font-size="10" font-weight="600" fill="#1e3a8a">rt/joint_ctrl</text>
+  <text x="450" y="239" text-anchor="middle" font-size="9" fill="#1e40af">LowCmd</text>
+
+  <rect x="378" y="265" width="144" height="52" rx="6" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="450" y="285" text-anchor="middle" font-size="10" font-weight="600" fill="#1e3a8a">rt/low_state</text>
+  <text x="450" y="299" text-anchor="middle" font-size="9" fill="#1e40af">LowState</text>
+
+  <rect x="378" y="327" width="144" height="34" rx="6" fill="#ffedd5" stroke="#f97316"/>
+  <text x="450" y="348" text-anchor="middle" font-size="9" font-weight="600" fill="#9a3412">rt/LocoApiTopic (Req/Resp)</text>
+
+  <!-- Robot box -->
+  <rect x="580" y="70" width="290" height="300" rx="10" fill="#f5f7fa" stroke="#9aa5b1" stroke-width="1.5"/>
+  <text x="725" y="95" text-anchor="middle" font-size="14" font-weight="700" fill="#334155">Robô (T1 / K1)</text>
+
+  <rect x="605" y="170" width="240" height="70" rx="6" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="725" y="190" text-anchor="middle" font-size="12" font-weight="600" fill="#1e3a8a">Placas de motor</text>
+  <text x="725" y="205" text-anchor="middle" font-size="10" fill="#1e40af">recebe q, kp, kd por junta</text>
+  <text x="725" y="219" text-anchor="middle" font-size="10" fill="#1e40af">PD roda aqui, não em Python</text>
+
+  <rect x="605" y="252" width="240" height="70" rx="6" fill="#ffedd5" stroke="#f97316"/>
+  <text x="725" y="272" text-anchor="middle" font-size="12" font-weight="600" fill="#9a3412">Serviço loco (firmware)</text>
+  <text x="725" y="287" text-anchor="middle" font-size="10" fill="#9a3412">processa ChangeMode, Move,</text>
+  <text x="725" y="301" text-anchor="middle" font-size="10" fill="#9a3412">GetStatus...</text>
+
+  <!-- Arrows -->
+  <line x1="295" y1="196" x2="378" y2="231" stroke="#3b82f6" stroke-width="2" marker-end="url(#arrowblue)"/>
+  <line x1="378" y1="291" x2="295" y2="205" stroke="#3b82f6" stroke-width="2" marker-end="url(#arrowblue)"/>
+  <line x1="295" y1="287" x2="378" y2="344" stroke="#f97316" stroke-width="2" marker-end="url(#arroworange)"/>
+  <line x1="378" y1="344" x2="295" y2="287" stroke="#f97316" stroke-width="2" marker-end="url(#arroworange)" transform="translate(0,10)"/>
+
+  <line x1="522" y1="231" x2="605" y2="196" stroke="#3b82f6" stroke-width="2" marker-end="url(#arrowblue)"/>
+  <line x1="605" y1="205" x2="522" y2="291" stroke="#3b82f6" stroke-width="2" marker-end="url(#arrowblue)"/>
+  <line x1="522" y1="344" x2="605" y2="287" stroke="#f97316" stroke-width="2" marker-end="url(#arroworange)"/>
+  <line x1="605" y1="297" x2="522" y2="354" stroke="#f97316" stroke-width="2" marker-end="url(#arroworange)"/>
+
+  <defs>
+    <marker id="arrowblue" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#3b82f6"/>
+    </marker>
+    <marker id="arroworange" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#f97316"/>
+    </marker>
+  </defs>
+
+  <!-- Legend -->
+  <rect x="30" y="400" width="840" height="140" rx="10" fill="#f8fafc" stroke="#cbd5e1"/>
+  <rect x="55" y="420" width="22" height="14" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="86" y="431" font-size="12" fill="#1e293b" font-weight="600">Plano pub/sub (streaming)</text>
+  <text x="86" y="448" font-size="11" fill="#475569">/joint_ctrl (RELIABLE, depth 1) e /low_state (BEST_EFFORT, depth 1).</text>
+  <text x="86" y="463" font-size="11" fill="#475569">Falado via rclpy puro — não usa as classes pub/sub do SDK Python.</text>
+
+  <rect x="480" y="420" width="22" height="14" fill="#ffedd5" stroke="#f97316"/>
+  <text x="511" y="431" font-size="12" fill="#1e293b" font-weight="600">Plano RPC (request/response)</text>
+  <text x="511" y="448" font-size="11" fill="#475569">RpcReqMsg / RpcRespMsg correlacionados por UUID, sobre 2 tópicos DDS.</text>
+  <text x="511" y="463" font-size="11" fill="#475569">Não é serviço ROS 2 nem DDS-RPC nativo — usado via B1LocoClient do SDK.</text>
+
+  <text x="55" y="500" font-size="11" fill="#334155">O booster_deploy usa o SDK da Booster apenas pelo plano RPC (ChangeMode, etc.).</text>
+  <text x="55" y="518" font-size="11" fill="#334155">O streaming de controle (LowCmd/LowState) é reimplementado direto sobre ROS 2 / rclpy.</text>
+</svg>

@@ -1,0 +1,65 @@
+<svg viewBox="0 0 900 560" xmlns="http://www.w3.org/2000/svg" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, sans-serif">
+  <rect x="0" y="0" width="900" height="560" fill="#ffffff"/>
+  <text x="450" y="32" text-anchor="middle" font-size="20" font-weight="700" fill="#1a1a1a">Onde os ganhos kp/kd entram em cada backend</text>
+
+  <!-- shared config -->
+  <rect x="290" y="55" width="320" height="70" rx="8" fill="#ede9fe" stroke="#7c3aed"/>
+  <text x="450" y="78" text-anchor="middle" font-size="12" font-weight="700" fill="#4c1d95">RobotCfg (Python, por robô/tarefa)</text>
+  <text x="450" y="95" text-anchor="middle" font-size="10" fill="#5b21b6">joint_stiffness, joint_damping,</text>
+  <text x="450" y="109" text-anchor="middle" font-size="10" fill="#5b21b6">prepare_state.stiffness/damping</text>
+
+  <line x1="380" y1="125" x2="220" y2="165" stroke="#7c3aed" stroke-width="2" marker-end="url(#d1)"/>
+  <line x1="520" y1="125" x2="680" y2="165" stroke="#7c3aed" stroke-width="2" marker-end="url(#d1)"/>
+
+  <!-- MuJoCo column -->
+  <rect x="60" y="170" width="330" height="330" rx="10" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="225" y="195" text-anchor="middle" font-size="14" font-weight="700" fill="#14532d">MuJoCo (sim2sim)</text>
+
+  <rect x="85" y="215" width="280" height="50" rx="6" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="225" y="235" text-anchor="middle" font-size="11" font-weight="600" fill="#14532d">kp lido de joint_stiffness</text>
+  <text x="225" y="250" text-anchor="middle" font-size="10" fill="#166534">usado no cálculo explícito do torque</text>
+
+  <rect x="85" y="275" width="280" height="60" rx="6" fill="#fee2e2" stroke="#dc2626"/>
+  <text x="225" y="295" text-anchor="middle" font-size="11" font-weight="700" fill="#7f1d1d">kd FORÇADO A ZERO</text>
+  <text x="225" y="310" text-anchor="middle" font-size="9" fill="#991b1b">joint_damping é ignorado no cálculo;</text>
+  <text x="225" y="323" text-anchor="middle" font-size="9" fill="#991b1b">espera-se damping passivo via MJCF</text>
+
+  <rect x="85" y="345" width="280" height="50" rx="6" fill="#fef3c7" stroke="#d97706"/>
+  <text x="225" y="365" text-anchor="middle" font-size="10" font-weight="600" fill="#78350f">MJCF do robô declara dof_damping?</text>
+  <text x="225" y="380" text-anchor="middle" font-size="9" fill="#92400e">T1: NÃO → damping efetivo = 0 em sim</text>
+
+  <rect x="85" y="405" width="280" height="70" rx="6" fill="#e2e8f0" stroke="#64748b"/>
+  <text x="225" y="425" text-anchor="middle" font-size="10" font-weight="600" fill="#1e293b">torque = kp·(alvo−pos) − kd·vel</text>
+  <text x="225" y="440" text-anchor="middle" font-size="9" fill="#334155">clip opcional: curva T-N</text>
+  <text x="225" y="453" text-anchor="middle" font-size="9" fill="#334155">(velocity_limit / knee_point_velocity)</text>
+  <text x="225" y="466" text-anchor="middle" font-size="9" fill="#334155">executado em Python, por sub-passo</text>
+
+  <!-- Real column -->
+  <rect x="510" y="170" width="330" height="330" rx="10" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="675" y="195" text-anchor="middle" font-size="14" font-weight="700" fill="#1e3a8a">Robô real (sim2real)</text>
+
+  <rect x="535" y="215" width="280" height="50" rx="6" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="675" y="235" text-anchor="middle" font-size="11" font-weight="600" fill="#1e3a8a">kp/kd lidos de joint_stiffness/damping</text>
+  <text x="675" y="250" text-anchor="middle" font-size="10" fill="#1e40af">ambos enviados por comando</text>
+
+  <rect x="535" y="275" width="280" height="60" rx="6" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="675" y="295" text-anchor="middle" font-size="11" font-weight="700" fill="#1e3a8a">MotorCmd.kp / MotorCmd.kd</text>
+  <text x="675" y="310" text-anchor="middle" font-size="9" fill="#1e40af">escritos a cada passo de política (50 Hz)</text>
+  <text x="675" y="323" text-anchor="middle" font-size="9" fill="#1e40af">publicados em /joint_ctrl</text>
+
+  <rect x="535" y="345" width="280" height="50" rx="6" fill="#fef3c7" stroke="#d97706"/>
+  <text x="675" y="365" text-anchor="middle" font-size="10" font-weight="600" fill="#78350f">weight = 0.0 sempre</text>
+  <text x="675" y="380" text-anchor="middle" font-size="9" fill="#92400e">ignorado de qualquer forma em modo CUSTOM</text>
+
+  <rect x="535" y="405" width="280" height="70" rx="6" fill="#e2e8f0" stroke="#64748b"/>
+  <text x="675" y="425" text-anchor="middle" font-size="10" font-weight="600" fill="#1e293b">τ = τff + kp·(q−q_med) + kd·(dq−dq_med)</text>
+  <text x="675" y="442" text-anchor="middle" font-size="9" fill="#334155">executado na PLACA DO MOTOR,</text>
+  <text x="675" y="455" text-anchor="middle" font-size="9" fill="#334155">não no processo Python</text>
+
+  <text x="450" y="525" text-anchor="middle" font-size="11" fill="#334155" font-weight="600">Conclusão: os ganhos são sempre definidos no mesmo lugar (config Python da tarefa).</text>
+  <text x="450" y="542" text-anchor="middle" font-size="11" fill="#334155">O que muda é onde o PD é executado — e se kd tem efeito algum.</text>
+
+  <defs>
+    <marker id="d1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#7c3aed"/></marker>
+  </defs>
+</svg>

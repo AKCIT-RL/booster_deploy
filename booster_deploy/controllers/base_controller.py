@@ -66,6 +66,14 @@ class BoosterRobot:
 
         self.default_joint_pos = torch.tensor(cfg.default_joint_pos, dtype=torch.float32)
         self.effort_limit = torch.tensor(cfg.effort_limit, dtype=torch.float32)
+        self.velocity_limit = (
+            torch.tensor(cfg.velocity_limit, dtype=torch.float32)
+            if cfg.velocity_limit is not None else None
+        )
+        self.knee_point_velocity = (
+            torch.tensor(cfg.knee_point_velocity, dtype=torch.float32)
+            if cfg.knee_point_velocity is not None else None
+        )
 
     @property
     def num_joints(self) -> int:
