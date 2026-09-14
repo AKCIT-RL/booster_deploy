@@ -55,6 +55,106 @@ import torch
 
 from booster_deploy.controllers.mujoco_controller import MujocoController
 
+EFFORT_URDF = "urdf"
+EFFORT_DERATED = "derated"
+EFFORT_CATALOG = "catalog"
+EFFORT_SOURCES = (EFFORT_URDF, EFFORT_DERATED, EFFORT_CATALOG)
+
+
+def apply_effort_source(cfg, source):
+    """Choose which torque ceiling the MuJoCo PD loop clips at.
+
+    ctrl_step clips at RobotCfg.effort_limit, and the task restates the URDF
+    limits (knee 130.5 Nm) because that is what the policy was trained against.
+    The firmware clips at Booster's derated operating limits instead
+    (T1_23DOF_CFG.effort_limit, knee 60 Nm), and those are never sent over the
+    wire - booster_robot_controller.ctrl_step publishes only q, kp and kd, so the
+    ceiling on hardware is whatever the motor board enforces.
+
+    "derated" therefore isolates one hardware constraint the way --degrade
+    zero_root isolates the other: same policy, same state, only the torque
+    ceiling moved to what the robot will actually deliver.
+
+    Caveat: a flat clip is the optimistic model. Real actuators fall off with
+    speed, which is what RobotCfg.velocity_limit / knee_point_velocity describe
+    (both None here, so the T-N curve is off). A policy that survives this is not
+    yet proven to survive the real torque-speed envelope.
+    """
+    from booster_deploy.robots import booster as bst
+
+    if (source == EFFORT_URDF):
+        return cfg
+    if (source == EFFORT_DERATED):
+        cfg.robot.effort_limit = list(bst.T1_23DOF_CFG.effort_limit)
+        return cfg
+    if (source == EFFORT_CATALOG):
+        cfg.robot.effort_limit = list(bst.T1_CATALOG_PEAK_TORQUE)
+        return cfg
+    raise ValueError("unknown effort source: {}".format(source))
+
+
+def apply_tn_curve(cfg, enabled):
+    """Turn on the torque-speed falloff the actuators actually have.
+
+    RobotCfg.velocity_limit and knee_point_velocity are None for the T1, so
+    ctrl_step's piecewise-linear T-N limit never runs and every experiment so far
+    clipped torque at a FLAT ceiling. That is the optimistic model: a real
+    actuator delivers full torque only up to its rated speed and decays to zero at
+    its no-load speed.
+
+    The numbers come from the manufacturer's own table
+    (docs/info_sources/boosteractuatordata.pdf) via booster.T1_CATALOG_*: rated
+    speed becomes knee_point_velocity, peak speed becomes velocity_limit. They are
+    applied here rather than on T1_23DOF_CFG so that turning this on stays an
+    explicit experimental choice and no existing task changes behaviour silently.
+
+    Worth knowing before reading a result: hip-roll, hip-yaw and waist have a peak
+    speed of only 70 rpm = 7.33 rad/s, the lowest on the robot, so they are where
+    the curve bites first.
+    """
+    if (not enabled):
+        return cfg
+
+    from booster_deploy.robots import booster as bst
+    cfg.robot.velocity_limit = list(bst.T1_CATALOG_VELOCITY_LIMIT)
+    cfg.robot.knee_point_velocity = list(bst.T1_CATALOG_KNEE_POINT_VELOCITY)
+    return cfg
+
+
+DEGRADE_NONE = "none"
+DEGRADE_ZERO_ROOT = "zero_root"
+DEGRADE_MODES = (DEGRADE_NONE, DEGRADE_ZERO_ROOT)
+
+
+def make_degraded(base_cls, degrade):
+    """Subclass whose update_state reports what the HARDWARE reports.
+
+    booster_robot_controller.py:244-249 fills root_pos_w and root_lin_vel_w with
+    np.zeros(3) because the T1 has no sensor for either. MuJoCo supplies both, so
+    a --mujoco run validates the policy against its own training assumptions
+    rather than against the deployment target. This puts the hardware's gap back
+    in, where falling is free.
+
+    For t1_mimickit_steering that is 4 of 200 observation dimensions: root_h and
+    the three of root_vel. The other 196 are invariant to the root's position and
+    linear velocity, so those 4 carry all of the translational information - which
+    is exactly why they are also the ones no onboard sensor can provide.
+    """
+    if (degrade == DEGRADE_NONE):
+        return base_cls
+    if (degrade != DEGRADE_ZERO_ROOT):
+        raise ValueError("unknown degrade mode: {}".format(degrade))
+
+    class Degraded(base_cls):
+        def update_state(self):
+            super().update_state()
+            self.robot.data.root_pos_w.zero_()
+            self.robot.data.root_lin_vel_b.zero_()
+
+    Degraded.__name__ = "ZeroRoot{}".format(base_cls.__name__)
+    return Degraded
+
+
 DAMPING_EXPLICIT = "explicit"
 DAMPING_IMPLICIT = "implicit"
 DAMPING_NONE = "none"

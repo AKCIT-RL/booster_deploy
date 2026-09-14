@@ -29,6 +29,14 @@ input" every step - harmless, and absent in interactive use.
 why the choice is not cosmetic. Default is `explicit`, the scheme the policy was
 trained and validated against.
 
+--degrade zero_root replaces root_pos_w and root_lin_vel_b with zeros, which is
+exactly what booster_robot_controller reports on the real T1. Watch it fall
+forward in about a second - see controllers.make_degraded.
+
+--effort selects the torque ceiling: `urdf` (default) is what the policy was
+trained against, `derated` is what the firmware actually enforces. `derated`
+isolates that one hardware constraint - see controllers.apply_effort_source.
+
 --checkpoint overrides the policy checkpoint (default: mimickit_steering.py's
 MimicKitSteeringPolicyCfg.checkpoint_path). Relative paths resolve against the
 task dir, same as the config default.
@@ -57,7 +65,9 @@ import numpy as np
 sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)))
 
-from tasks.mimickit_steering.controllers import CONTROLLERS  # noqa: E402
+from tasks.mimickit_steering.controllers import (  # noqa: E402
+    CONTROLLERS, DEGRADE_MODES, DEGRADE_NONE, EFFORT_SOURCES, EFFORT_URDF,
+    apply_effort_source, apply_tn_curve, make_degraded)
 
 VX_STEP = 0.1
 VY_STEP = 0.1
@@ -171,6 +181,16 @@ def main():
     parser.add_argument("--checkpoint", default=None,
                         help="policy checkpoint path (default: cfg.policy.checkpoint_path, "
                              "relative to the task dir unless absolute)")
+    parser.add_argument("--effort", default=EFFORT_URDF, choices=sorted(EFFORT_SOURCES),
+                        help="torque ceiling the PD loop clips at: 'urdf' is what the "
+                             "policy trained against, 'derated' is what the firmware "
+                             "enforces (see controllers.apply_effort_source)")
+    parser.add_argument("--tn", action="store_true",
+                        help="enable the catalogue torque-speed falloff "
+                             "(see controllers.apply_tn_curve)")
+    parser.add_argument("--degrade", default=DEGRADE_NONE, choices=sorted(DEGRADE_MODES),
+                        help="'zero_root' zeroes root_pos_w and root_lin_vel_b, exactly "
+                             "what the hardware reports (see controllers.make_degraded)")
     parser.add_argument("--vx", type=float, default=0.0)
     parser.add_argument("--vy", type=float, default=0.0)
     parser.add_argument("--yaw", type=float, default=0.0)
@@ -188,8 +208,12 @@ def main():
         cfg.mujoco.log_states = args.log_states
     if (args.checkpoint is not None):
         cfg.policy.checkpoint_path = args.checkpoint
+    apply_effort_source(cfg, args.effort)
+    apply_tn_curve(cfg, args.tn)
 
-    controller = make_keyboard_controller(CONTROLLERS[args.pd])(cfg)
+    base = make_degraded(CONTROLLERS[args.pd], args.degrade)
+    controller = make_keyboard_controller(base)(cfg)
+    print(f"[exp] pd={args.pd}  effort={args.effort}  tn={args.tn}  degrade={args.degrade}")
     controller.vel_command.lin_vel_x = args.vx
     controller.vel_command.lin_vel_y = args.vy
     controller.vel_command.ang_vel_yaw = args.yaw
