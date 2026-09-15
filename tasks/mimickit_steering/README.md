@@ -34,7 +34,32 @@ reimplementing the 200-dim layout, which is why the checkout is needed. A copied
 layout goes stale silently; an imported one cannot.
 
 None of this is needed to `--list` tasks: MimicKit is imported on first use, so a
-robot carrying only `booster_deploy` is unaffected.
+robot carrying only `booster_deploy` is unaffected. **That cuts both ways** — a
+missing dependency is therefore not reported by `--list` either, and surfaces
+only once the inference process is forked, which is *after* the robot has entered
+CUSTOM mode and ramped to the prepare pose. Check the environment on the ground
+instead:
+
+```bash
+python3 scripts/preflight.py --task t1_mimickit_steering
+```
+
+On the robot install from [`requirements-robot.txt`](../../requirements-robot.txt),
+**not** from MimicKit's own `requirements.txt` — that one pins `numpy==2.5.0`
+(Python 3.12) and pulls training-only packages. See
+[docs/11](../../docs/11-dependencias-e-preflight.md) for why a `python3.11` venv
+breaks the deploy outright.
+
+## Safety on hardware
+
+This task is **sim-only**. `root_h` and `root_vel` — 4 of the 200 observation
+dimensions — have no sensor on the T1 and arrive as zeros
+(`booster_robot_controller.py:244-249`). The fall guard (`enable_safety_fallback`,
+`fall_gravity_z`) and the rate limiter (`max_target_rate`) bound what a fall costs;
+they do not close that gap. Run
+`scripts/sim_viability.py --degrade zero_root` — which reproduces the hardware's
+gap inside MuJoCo — before any physical test, and read
+[docs/08](../../docs/08-caminho-para-hardware-mimickit.md).
 
 ## Running
 

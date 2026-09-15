@@ -33,6 +33,10 @@ marcados explicitamente como tal.
    a 1 e o que elas mostram que as tabelas escondiam.
 10. [Pontos de discussão e próximos passos](10-discussao-proximos-passos.md) — as questões em
     aberto, o que é relevante pré/durante/pós deploy, e a pauta de retreinamento.
+11. [Dependências, preflight e handover](11-dependencias-e-preflight.md) — o que a primeira
+    tentativa real de deploy no T1 quebrou, as três armadilhas de instalação no robô
+    (Python 3.10, numpy/ABI, requirements de treino), e as correções de continuidade do
+    handover, guard de queda e limitador de taxa.
 
 ## TL;DR das três perguntas centrais
 

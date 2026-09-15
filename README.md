@@ -61,15 +61,32 @@ Booster Deploy is a lightweight deployment framework that supports running contr
      sudo make install
      ```
 
-- Install Python dependencies on the robot:
+- Install Python dependencies on the robot — note this is a **different file** from
+  the one used on the development machine:
    ```
-   pip install -r requirements.txt
+   pip install -r requirements-robot.txt
    ```
+   Read that file's header first. In short: the robot's Python 3.10 is a
+   requirement, not a limitation — `rclpy` and `booster_robotics_sdk_python` are C
+   extensions built against it, so a venv on another interpreter cannot load them
+   and no wheel exists to reinstall them. Do not install a training repo's
+   `requirements.txt` on the robot, and do not upgrade the system numpy to 2.x.
+   See [`docs/11`](docs/11-dependencias-e-preflight.md).
 
 - SSH into the robot and start the ROS 2 environment by sourcing the provided setup script:
    ```bash
    source /opt/booster/BoosterRos2Interface/install/setup.bash
    ```
+
+- Validate the environment **before** powering the robot:
+   ```bash
+   python3 scripts/preflight.py --task <TASK_NAME>
+   ```
+   `deploy.py` constructs the policy inside the inference process, which is forked
+   *after* the robot has entered CUSTOM mode and ramped to the prepare pose — so a
+   missing dependency surfaces with the robot already standing, and `--list` will
+   not warn you (`tasks/__init__` swallows import errors by design).
+   `preflight.py` imports what the deploy imports, without moving anything.
 
 - Launch the task on the robot and follow the prompts shown in the command line..
    ```bash

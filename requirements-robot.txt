@@ -1,0 +1,61 @@
+# Dependências de RUNTIME no robô (Python 3.10, placa de movimento do T1).
+#
+# LEIA ANTES DE INSTALAR QUALQUER COISA NO ROBÔ
+#
+# 1. NÃO instale o requirements.txt do repositório de TREINO (MimicKit, tsinghua,
+#    htwk-gym). Aqueles arquivos pinam `numpy==2.5.0`, que exige Python 3.12 e
+#    não resolve no robô, e arrastam diffusers / wandb / moviepy / pyglet, que
+#    são dependências de treino e de renderização de vídeo. Nenhuma delas é
+#    importada pelo caminho de inferência — ver a lista verificada abaixo.
+#
+# 2. NÃO crie venv com Python != 3.10. `rclpy`, `booster_interface.msg` e
+#    `booster_robotics_sdk_python` são extensões C compiladas contra o CPython
+#    3.10 do sistema (ROS 2 Humble + build do SDK). Nenhum outro interpretador
+#    consegue carregá-las e não existe wheel para reinstalar. Se quiser
+#    isolamento, a única forma que funciona é herdar o site-packages do sistema:
+#
+#        python3 -m venv --system-site-packages env_deploy
+#
+# 3. NÃO atualize o numpy para 2.x no Python do sistema. O `rclpy` do Humble é
+#    compilado contra numpy 1.x (o robô traz 1.21.5 em /usr/lib/python3/dist-packages);
+#    subir para 2.x quebra o ABI e derruba a assinatura de /low_state — ou seja,
+#    o deploy inteiro, não só esta task.
+#
+# Valide o ambiente antes de energizar:
+#
+#     python3 scripts/preflight.py --task t1_mimickit_steering
+#
+# ---------------------------------------------------------------------------
+# Já presentes na imagem do robô, NÃO reinstalar (listados para referência):
+#
+#   rclpy, booster_interface          ROS 2 Humble
+#   booster_robotics_sdk_python       build do SDK com -DBUILD_PYTHON_BINDING=ON
+#   numpy                             1.21.5, via dist-packages do sistema
+# ---------------------------------------------------------------------------
+
+# Núcleo do booster_deploy.
+torch
+scipy
+
+# Controle por teclado/joystick no caminho real (utils/remote_control_service).
+evdev
+
+# --- Somente para as tasks que usam MimicKit (t1_mimickit_steering) ---
+#
+# A cadeia de import real do caminho de inferência é
+#   anim.mjcf_char_model, envs.char_env, envs.task_steering_env, util.torch_util
+# e ela toca exatamente quatro pacotes de terceiros: torch, numpy, gymnasium e
+# pyyaml. Verificado carregando os quatro módulos e inspecionando sys.modules —
+# não é uma leitura otimista do requirements do MimicKit.
+#
+# `gymnasium` entra porque envs.char_env importa gymnasium.spaces para o action
+# space, mesmo que a função de observação em si seja torch puro. Foi exatamente
+# esta a dependência ausente que matou o primeiro deploy no robô.
+gymnasium
+PyYAML
+
+# NÃO é necessário no robô, apesar de aparecer no requirements do MimicKit:
+#   diffusers, wandb, moviepy, pyglet, tensorboardX, matplotlib, imageio
+#
+# `mujoco` também não: o robô roda o BoosterRobotController, não o
+# MujocoController. Instale-o só na máquina de desenvolvimento (requirements.txt).

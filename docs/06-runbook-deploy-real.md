@@ -16,6 +16,13 @@
 
 ## Checklist antes de energizar
 
+- [ ] **`python3 scripts/preflight.py --task <TASK_NAME>` sai com código 0.** Sem FAIL.
+      Este passo é obrigatório e não move o robô. `deploy.py` constrói a policy dentro do
+      processo de inferência, forkado **depois** de o robô entrar em modo CUSTOM e rampar
+      até a pose de preparo — então uma dependência ausente se manifesta com o robô já de
+      pé, e `--list` não avisa (`tasks/__init__` engole erros de import por design). Foi
+      exatamente assim que a primeira tentativa real falhou; ver
+      [11 — Dependências e preflight](11-dependencias-e-preflight.md).
 - [ ] Tarefa já validada em `--mujoco` (sim2sim) com o mesmo checkpoint que será usado no
       robô.
 - [ ] Robô fisicamente suspenso ou apoiado com segurança para o primeiro teste de uma tarefa
