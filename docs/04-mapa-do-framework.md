@@ -166,6 +166,11 @@ O `booster_deploy` usa **`SERIAL`** (`booster_robot_controller.py:282`) e lê de
 comporta como uma junta serial comum (pitch/roll independentes), não como o mecanismo
 paralelo físico.
 
+Essa é uma quarta dimensão, ortogonal às três ordenações acima: não *qual* índice é qual
+junta, mas em *qual espaço de coordenadas* os quatro slots de tornozelo são interpretados.
+O mecanismo, o que a simulação deixa de modelar por causa dele, e o contrato que precisa valer
+entre treino e deploy estão em [13](13-juntas-serial-vs-parallel.md).
+
 ## Tarefas registradas
 
 | Nome (`--task`) | Robô | Pasta | Observações |
@@ -184,3 +189,4 @@ Registro via `utils/registry.py` (`register_task`/`get_task`/`list_tasks`); list
 - [01 — Arquitetura de comunicação](01-arquitetura-comunicacao.md)
 - [03 — Ganhos PD](03-ganhos-pd-sim-vs-real.md)
 - [05 — Armadilhas conhecidas](05-armadilhas-conhecidas.md)
+- [13 — Juntas seriais e paralelas](13-juntas-serial-vs-parallel.md)

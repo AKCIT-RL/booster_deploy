@@ -40,6 +40,9 @@ marcados explicitamente como tal.
 12. [Guia de teste no robô real](12-guia-teste-robo-real.md) — a sequência concreta para a
     `t1_mimickit_steering`, da validação em sim ao run no pórtico, com o que observar em cada
     ponto e uma tabela de troubleshooting.
+13. [Juntas seriais e paralelas](13-juntas-serial-vs-parallel.md) — o mecanismo de tornozelo do
+    T1, os dois espaços de coordenadas do firmware, o que a simulação não modela e o contrato
+    de espaço de ação entre treino e deploy.
 
 ## TL;DR das três perguntas centrais
 

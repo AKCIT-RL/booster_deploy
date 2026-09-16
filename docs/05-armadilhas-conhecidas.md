@@ -168,7 +168,25 @@ nenhuma tarefa os popula, e nada os consome no fluxo de `deploy.py`.
 são feitas (ver `SyncedMetrics` para o que de fato está em uso, descrito no
 [runbook](06-runbook-deploy-real.md)).
 
+## 11. O default de `LowCmd.cmd_type` é `PARALLEL`, e nada verifica o que chegou
+
+**Sintoma:** o IDL do SDK inicializa o campo como `PARALLEL`
+(`../booster_robotics_sdk/include/booster/idl/b1/LowCmd.h:191`), e todos os exemplos do
+fabricante usam `PARALLEL` com `SERIAL` comentado uma linha acima. A única coisa que coloca o
+deploy no espaço serial é `booster_robot_controller.py:282`. Se essa linha sumir num refactor,
+os quatro slots de tornozelo passam a ser interpretados como ângulos de crank — silenciosamente,
+sem erro, e com o robô de pé.
+
+Agrava: o handler itera `low_state_msg.motor_state_serial` sem checar o comprimento (`:237`), e
+`joint_names` nomeia os slots 15/16/21/22 como `Ankle_Pitch`/`Ankle_Roll`
+(`booster_deploy/robots/booster.py:241-248`) sem que nada confirme que o firmware concorda.
+
+**Como lidar:** logar `cmd_type` e `len(motor_state_serial)` uma vez na inicialização, e rodar o
+teste de identidade de junta com o robô suspenso antes do primeiro run — ver
+[13 §6](13-juntas-serial-vs-parallel.md).
+
 ## Ver também
 
 - [03 — Ganhos PD](03-ganhos-pd-sim-vs-real.md)
 - [04 — Mapa do framework](04-mapa-do-framework.md)
+- [13 — Juntas seriais e paralelas](13-juntas-serial-vs-parallel.md)

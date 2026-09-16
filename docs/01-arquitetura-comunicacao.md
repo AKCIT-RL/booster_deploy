@@ -58,8 +58,9 @@ publisher = self.publish_node.create_publisher(
 
 - QoS **RELIABLE**, profundidade 1: a última mensagem é reentregue se um assinante conectar
   atrasado, mas não há fila de histórico.
-- `LowCmd.cmd_type = LowCmd.CMD_TYPE_SERIAL` (`:282`) — ver [04](04-mapa-do-framework.md) para
-  a diferença entre `SERIAL` e `PARALLEL` (tornozelo).
+- `LowCmd.cmd_type = LowCmd.CMD_TYPE_SERIAL` (`:282`) — seleciona o espaço de coordenadas dos
+  quatro slots de tornozelo; o default do IDL é `PARALLEL`. Ver
+  [13](13-juntas-serial-vs-parallel.md).
 - Um `MotorCmd` por junta, com `q, dq, tau, kp, kd, weight` — ver
   [03](03-ganhos-pd-sim-vs-real.md).
 
