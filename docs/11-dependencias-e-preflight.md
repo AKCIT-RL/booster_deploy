@@ -1,4 +1,4 @@
-# 11. Dependências no robô, preflight e continuidade do handover
+# 11. Dependências no robô, preflight e a pose de preparo
 
 > Este documento registra as correções feitas após a **primeira tentativa real de deploy da
 > `t1_mimickit_steering` no T1** (2026-09-15) e o método para não repetir a classe de falha
@@ -96,15 +96,15 @@ python3 scripts/preflight.py --task t1_mimickit_steering --mujoco
 
 Verifica versão do Python, isolamento do venv, deps de núcleo, ABI do numpy contra o rclpy, a
 pilha ROS/SDK, o registro da task (**relatando a exceção de import que o `--list` engole**), a
-cadeia do MimicKit, o asset, o checkpoint (carrega de fato, via `torch.jit.load`), a
-continuidade do handover e o estado dos guards. Saída 0/1, para entrar em script.
+cadeia do MimicKit, o asset, o checkpoint (carrega de fato, via `torch.jit.load`), a pose e a
+rigidez de preparo, e o estado dos guards. Saída 0/1, para entrar em script.
 
 Quando uma dependência do MimicKit falta, o diagnóstico já traz a correção **e** o aviso de não
 instalar o requirements de treino — que é o erro seguinte na sequência natural.
 
 Isto é um passo obrigatório do runbook, antes de energizar.
 
-## 4. Continuidade do handover (`prepare_state`)
+## 4. A pose de preparo (`prepare_state`)
 
 Achado separado, encontrado ao revisar o que aconteceria se aquele run **tivesse** chegado à
 inferência. A `t1_mimickit_steering` não sobrescrevia `prepare_state`, herdando o de
@@ -118,17 +118,50 @@ um degrau nos **dois** eixos ao mesmo tempo, no instante da entrega do controle:
 
 A política de steering emite **alvo absoluto de posição** — ela não corrige a partir da pose em
 que recebe o robô, ela comanda a sua. Então o primeiro passo seria um degrau até a pose de
-treino, com o robô já de pé; e simultaneamente o ganho cairia por um fator de quatro sob o
-próprio peso do robô, fazendo-o ceder. A primeira observação da política seria de um robô em
-colapso.
+treino, com o robô já de pé.
 
-A correção ramp**a até a pose de treino sob os ganhos da própria política**: no instante do
-handover nada muda, porque nada sobrou para mudar. Como efeito colateral desejável, a pergunta
-"kp=80 sustenta o T1 de pé?" passa a ser respondida durante uma rampa de 1 s ainda sob controle
-da rampa, em vez de no handover. Se ceder ali, esta política nunca poderia ter sustentado a
-pose, e a rampa é o lugar mais barato de descobrir isso.
+A primeira correção tratou pose **e ganhos** como o mesmo problema e rampou até a pose de
+treino sob os ganhos da própria política, argumentando que assim "nada muda no handover". **Isso
+estava errado, e derrubou o robô no teste seguinte** — ver §4a.
 
-`preflight.py` checa essa igualdade, então a regressão é detectável.
+A correção correta substitui **só a pose**, herdando `stiffness`/`damping` de
+`T1_23DOF_CFG.prepare_state`. `preflight.py` checa as duas coisas, em direções opostas: a pose
+tem de bater com a da policy, e os ganhos de preparo têm de ser **rígidos o bastante** (kp ≥ 200
+no quadril/joelho), não iguais aos dela.
+
+## 4a. Correção da correção: por que os ganhos de preparo não são os da política
+
+No teste no robô, ao entrar em modo CUSTOM o T1 **afundou lentamente até o chão**, sem parecer
+tentar sustentar posição alguma. O diagnóstico inicial deste documento — "se ceder na rampa,
+`kp=80` não sustenta o T1 e a política nunca teria funcionado" — estava certo na primeira
+metade e **errado na segunda**.
+
+Medido: segurando estaticamente a pose de treino por 3 s, com o teto de torque derated.
+
+| ganho de perna (quadril/joelho) | altura final da base |
+|---|---|
+| 350 — preparo da Booster | 0,678 m |
+| 200 — regime da `locomotion` | 0,676 m |
+| **80 — o desta política** | **0,025 m (no chão)** |
+
+Isolando: o tornozelo **não** é a causa — enrijecê-lo sozinho não muda nada. É o ganho de
+quadril/joelho. E, revelador: durante todo o colapso **as juntas seguiram seus alvos com erro
+de ~1°**. O robô não perdeu rastreamento de junta; ele perdeu equilíbrio. É exatamente a
+descrição do operador: "como se o torque fosse baixo e não estivesse tentando manter posição".
+
+**Por que isso não condena a política.** Segurar uma pose e rodar uma política são problemas de
+controle diferentes. Um PD sobre alvo fixo carrega o pêndulo invertido inteiro na rigidez das
+juntas; a política re-planeja o alvo 30 vezes por segundo e equilibra **ativamente** — e é por
+isso que `kp=80` anda perfeitamente em MuJoCo. Não há contradição entre "afunda parada a
+kp=80" e "anda a kp=80".
+
+A divisão da Booster — **rígido para ficar de pé, mole para rodar** — é correta, não um
+descuido a ser suavizado. A `tasks/locomotion`, que funciona no hardware, faz exatamente o
+mesmo: ganhos próprios de 200/50 e rampa sob os 350 herdados.
+
+O degrau de ganho no handover (350 → 80) portanto é **real e fica**. É o mesmo degrau com que a
+`locomotion` convive, um fator maior. Ele não é removível por configuração de preparo — tentar
+removê-lo por baixo só derruba o robô mais cedo.
 
 ## 5. Guard de queda e limitador de taxa
 
@@ -221,7 +254,8 @@ Portanto, o estado após estas correções:
 | | antes | agora |
 |---|---|---|
 | falha de dependência | com o robô de pé | em terra, no preflight |
-| handover | degrau de pose **e** de ganho | contínuo |
+| pose no handover | degrau (meia agachada) | contínua |
+| ganho no handover | 350 → 80 | 350 → 80, inerente (§4a) |
 | queda | sem detecção | parada controlada |
 | transiente de atuador | sem teto | teto de sanidade a 120 rad/s (§5) |
 | **`root_h` / `root_vel`** | **zeros** | **zeros** |

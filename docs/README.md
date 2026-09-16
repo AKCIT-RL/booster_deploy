@@ -37,6 +37,9 @@ marcados explicitamente como tal.
     tentativa real de deploy no T1 quebrou, as três armadilhas de instalação no robô
     (Python 3.10, numpy/ABI, requirements de treino), e as correções de continuidade do
     handover, guard de queda e limitador de taxa.
+12. [Guia de teste no robô real](12-guia-teste-robo-real.md) — a sequência concreta para a
+    `t1_mimickit_steering`, da validação em sim ao run no pórtico, com o que observar em cada
+    ponto e uma tabela de troubleshooting.
 
 ## TL;DR das três perguntas centrais
 

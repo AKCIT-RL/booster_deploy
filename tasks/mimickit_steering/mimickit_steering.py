@@ -33,14 +33,18 @@ rather than the 50 Hz / 500 Hz defaults, and hence the gains are restated here
 instead of inherited from T1WalkControllerCfg, whose 200/5 belong to Booster's
 own policy.
 
-HANDOVER, AND WHY prepare_state IS RESTATED HERE
+HANDOVER: THE POSE IS OURS, THE PREPARE GAINS ARE NOT
 
-The gains and the pose a position-target policy is handed the robot in are part
-of the policy, for the same reason the gains are: at the handover the PD loop
-does not restart, it changes coefficients underneath a robot that is holding
-itself up. Inheriting Booster's prepare_state stepped BOTH the pose and the
-gains at that instant. Both are restated in the controller cfg below, so that
-the ramp ends in exactly the state the first inference step assumes.
+The pose the ramp ends in is part of this policy - its output is an absolute
+position target, so it commands its pose rather than correcting toward one, and
+Booster's prepare pose is half this crouch. That pose is overridden below.
+
+The prepare GAINS are not, and an earlier version of this file that overrode
+them put the T1 on the floor during the ramp. Holding a pose statically and
+running a policy are different control problems: a PD on a fixed target carries
+the whole inverted pendulum on joint stiffness, while the policy re-plans 30
+times a second and balances actively. Stiff to stand, soft to run. See the
+PREPARE STATE note in the controller cfg for the measurements.
 
 WHAT THIS STILL DOES NOT DO
 
@@ -339,29 +343,43 @@ class T1MimicKitSteeringControllerCfg(ControllerCfg):
         joint_stiffness=T1_KP,
         joint_damping=T1_KD,
         effort_limit=T1_EFFORT_URDF,
-        # PREPARE POSE - see the module docstring. T1_23DOF_CFG's own
-        # prepare_state is Booster's, for Booster's policy, and inheriting it
-        # put a discontinuity in the handover on BOTH axes at once:
+        # PREPARE STATE - the POSE is overridden here, the GAINS deliberately
+        # are not. The asymmetry is the whole point, and it was learned the
+        # expensive way: an earlier version of this file set both to the
+        # policy's values, and on the T1 the robot sank to the floor during the
+        # ramp, joints tracking their targets to within a degree the whole way
+        # down. Measured afterwards, holding this pose statically for 3 s with
+        # the derated torque ceiling:
         #
-        #   pose  their prepare pose has the legs at [-0.1, 0, 0, 0.2, -0.1, 0],
-        #         half the crouch of the pose this policy trained in. The policy's
-        #         output is an ABSOLUTE position target, so its first command is
-        #         a step to the training pose, not a correction from it.
+        #   leg kp 350 (Booster's prepare)   base stays at 0.678 m
+        #   leg kp 200 (locomotion's)        base stays at 0.676 m
+        #   leg kp  80 (this policy's)       base ends at 0.025 m - on the floor
         #
-        #   gains their prepare holds it at kp=350; this policy runs at kp=80
-        #         (T1_KP). The ramp ends and the gains drop by a factor of four
-        #         under the robot's own weight, so it sags - and the policy's
-        #         first observation is of a robot mid-collapse.
+        # Isolated: the ankles are not the cause (stiffening them alone changes
+        # nothing); the hip and knee gain is. Below ~200 the leg cannot hold the
+        # robot up with a fixed target.
         #
-        # Both are closed by ramping to the training pose UNDER THE POLICY'S OWN
-        # GAINS: at the instant of handover nothing changes, because nothing is
-        # left to change. Whether kp=80 holds the T1 up at all is now answered
-        # during a 1 s ramp with the robot still under the ramp's control,
-        # instead of at the handover. If it sags there, this policy could never
-        # have held the pose and the ramp is the cheapest place to learn it.
+        # WHY THAT IS NOT A VERDICT ON THE POLICY. Statically holding a pose and
+        # running a policy are different control problems. A PD on a fixed
+        # target has to carry the whole inverted pendulum on joint stiffness
+        # alone; the policy re-plans its target 30 times a second and balances
+        # actively, which is why kp=80 walks perfectly well in MuJoCo. The two
+        # regimes need different gains, and Booster's split - stiff to stand,
+        # soft to run - is correct rather than an oversight to be smoothed away.
+        # tasks/locomotion does exactly the same thing: its own gains are
+        # 200/50 and it still ramps under the inherited 350.
+        #
+        # So the gains are inherited from T1_23DOF_CFG and only the pose is
+        # replaced, because only the pose has to match what the first inference
+        # step assumes: this policy's output is an ABSOLUTE position target, so
+        # it commands its pose rather than correcting toward it, and Booster's
+        # prepare pose (legs at [-0.1, 0, 0, 0.2, -0.1, 0]) is half this crouch.
+        #
+        # The gain step at handover (350 -> 80) is therefore real and stays.
+        # It is the same step locomotion lives with, one factor larger.
         prepare_state=PrepareStateCfg(
-            stiffness=list(T1_KP),
-            damping=list(T1_KD),
+            stiffness=list(T1_23DOF_CFG.prepare_state.stiffness),
+            damping=list(T1_23DOF_CFG.prepare_state.damping),
             joint_pos=list(T1_TRAIN_POSE),
         ),
     )

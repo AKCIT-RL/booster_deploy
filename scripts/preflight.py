@@ -243,28 +243,41 @@ def check_checkpoint(cfg) -> None:
 
 
 def check_handover(cfg) -> None:
-    """Pose e ganhos devem ser contínuos na entrega do controle.
+    """A POSE de preparo deve bater com a da policy; os GANHOS não devem.
 
-    Uma política de alvo ABSOLUTO de posição não corrige a partir da pose em que
-    recebe o robô: ela comanda a sua. Se a rampa de preparo termina em outra pose,
-    ou sob outros ganhos, o primeiro passo é um degrau — e esse degrau acontece
-    com o robô já de pé. Ver a nota PREPARE POSE em mimickit_steering.py.
+    Uma política de alvo absoluto de posição não corrige a partir da pose em que
+    recebe o robô: ela comanda a sua. Se a rampa termina em outra pose, o
+    primeiro passo é um degrau, com o robô já de pé.
+
+    Os ganhos são o caso oposto, e essa checagem já esteve errada na direção
+    contrária: exigia que os ganhos de preparo fossem os da policy, que é o que
+    derrubou o T1 em 2026-09-15. Segurar uma pose estaticamente carrega o
+    pêndulo invertido inteiro na rigidez das juntas; a política re-planeja a
+    30 Hz e equilibra ativamente. Ganhos de preparo mais moles que ~200 no
+    quadril/joelho põem o robô no chão durante a rampa. Ver a nota PREPARE STATE
+    em mimickit_steering.py.
     """
     prep = getattr(cfg.robot, "prepare_state", None)
     if prep is None:
         return
-    pose_ok = list(prep.joint_pos) == list(cfg.robot.default_joint_pos)
-    gain_ok = list(prep.stiffness) == list(cfg.robot.joint_stiffness)
-    if pose_ok and gain_ok:
-        record(OK, "handover contínuo (pose e ganhos de preparo == os da policy)")
-        return
-    detail = []
-    if not pose_ok:
-        detail.append("pose de preparo != default_joint_pos da task")
-    if not gain_ok:
-        detail.append("ganhos de preparo (kp joelho {}) != os da policy (kp {})"
-                      .format(prep.stiffness[14], cfg.robot.joint_stiffness[14]))
-    record(WARN, "descontinuidade no handover", "\n".join(detail))
+
+    if list(prep.joint_pos) == list(cfg.robot.default_joint_pos):
+        record(OK, "pose de preparo == a pose que a policy assume")
+    else:
+        record(WARN, "pose de preparo != default_joint_pos da task",
+               "a policy comanda alvo ABSOLUTO: o primeiro passo seria um degrau")
+
+    # 11 = Waist, 14 = Left_Knee_Pitch: as juntas que sustentam o robô de pé.
+    weakest = min(prep.stiffness[11], prep.stiffness[14])
+    if weakest >= 200:
+        record(OK, "ganhos de preparo sustentam a pose (kp joelho {:.0f})".format(
+            prep.stiffness[14]))
+    else:
+        record(FAIL, "ganhos de preparo moles demais para segurar o robô",
+               "kp joelho {:.0f}, cintura {:.0f} — abaixo de ~200 o robô AFUNDA\n"
+               "durante a rampa, antes mesmo da política assumir. Não use os\n"
+               "ganhos da policy aqui; herde os de T1_23DOF_CFG.prepare_state."
+               .format(prep.stiffness[14], prep.stiffness[11]))
 
 
 def check_safety(cfg) -> None:
