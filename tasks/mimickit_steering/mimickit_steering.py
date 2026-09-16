@@ -163,6 +163,10 @@ class MimicKitSteeringPolicy(Policy):
         # means that if the ramp did NOT reach the pose it was asked for, the
         # limiter walks from where the robot actually is.
         self._prev_targets = self.robot.data.joint_pos.clone()
+        # seeded on the first inference rather than here: the filter's state is
+        # a TARGET, and joint_pos is where the robot IS, which after the prepare
+        # ramp is the same thing only if the ramp arrived
+        self._filtered = None
 
     def _projected_gravity(self) -> torch.Tensor:
         """Gravity in the base frame; [2] ~ -1 upright, -> 0 on its side."""
@@ -227,7 +231,48 @@ class MimicKitSteeringPolicy(Policy):
             # already the joint position target: unnormalized and clipped inside
             # the exported module. Do not add a default pose or an action scale.
             dof_targets = self._model(obs)
-        return self._rate_limit(dof_targets)
+        return self._rate_limit(self._lowpass(dof_targets))
+
+    def _lowpass(self, dof_targets: torch.Tensor) -> torch.Tensor:
+        """First-order low-pass on the position target. Off by default.
+
+        Aimed at a specific measured problem: this checkpoint's target does not
+        move smoothly, it DITHERS. Over 30 s at vx=1.0 the commanded target
+        reverses direction 16.7 times per second at the hip and 10-13 at the
+        ankle, with a median step of 0.20 rad at the hip and 0.10 rad at the
+        ankle - at a 30 Hz update rate, where 15 reversals/s is the most a
+        non-aliased signal can show. The reference is oscillating at its own
+        control rate.
+
+        On hardware that is a buzz, and the ankle is where it is loudest: its
+        PD loop's natural frequency under this task's gains is ~3.3 Hz in pitch,
+        so a ~12 Hz dither is a command the loop cannot follow and can only
+        fight, and the T1's ankle pitch and roll share a parallel linkage driven
+        by one motor pair, so the two dithers beat against each other in it.
+
+        A rate limit is the wrong instrument for this - it bounds amplitude,
+        and the dither's problem is its frequency. A low-pass attacks the
+        frequency directly: the gait's own fundamental is 1-2 Hz, so a cutoff
+        of 5-8 Hz passes the motion and removes the dither.
+
+        Kept OFF by default because it changes the closed loop the checkpoint
+        was validated in, and because the right fix is upstream: MimicKit's
+        export has no action-smoothness term, so the chatter is baked into the
+        checkpoint. This is a diagnostic instrument, not a solution - if a run
+        only works with it on, that is a finding about the checkpoint to carry
+        into retraining, not a setting to leave enabled and forget.
+        """
+        fc = self.cfg.target_lowpass_hz
+        if (fc is None):
+            return dof_targets
+        # alpha for a first-order filter at cutoff fc, sampled at policy_dt
+        tau = 1.0 / (2.0 * math.pi * fc)
+        alpha = self.cfg.policy_dt / (tau + self.cfg.policy_dt)
+        if (self._filtered is None):
+            self._filtered = dof_targets.clone()
+        else:
+            self._filtered = self._filtered + alpha * (dof_targets - self._filtered)
+        return self._filtered
 
     def _rate_limit(self, dof_targets: torch.Tensor) -> torch.Tensor:
         """Bound how far a single step may move the position target.
@@ -334,6 +379,12 @@ class MimicKitSteeringPolicyCfg(PolicyCfg):
     # Bounding the actuator transient properly means retraining with one, not
     # filtering it here. See docs/11 section 5.
     max_target_rate: float | None = 120.0
+
+    # Cutoff [Hz] of a first-order low-pass on the position target; None = off,
+    # which is the default. See MimicKitSteeringPolicy._lowpass for what this is
+    # for and why it does not ship enabled. Reachable on the robot with
+    # `deploy.py --target-lowpass 6`, which is where it is meant to be used.
+    target_lowpass_hz: float | None = None
 
 
 @configclass

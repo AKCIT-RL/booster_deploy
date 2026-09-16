@@ -231,6 +231,90 @@ atuador de verdade significa retreinar com um termo desses — não filtrar aqui
 pauta de retreinamento da [10](10-discussao-proximos-passos.md), ao lado de
 `--effort_source deploy`.
 
+## 5a. O chatter apareceu no robô: tremor no tornozelo
+
+Confirmação em hardware da previsão acima. No primeiro run que chegou ao RL gait, o **tornozelo
+tremeu forte**. A suspeita natural foi `kd` baixo demais. Os ganhos dizem o contrário:
+
+| junta | `t1_walk` kp/kd | `mimickit_steering` kp/kd | kd/kp |
+|---|---|---|---|
+| quadril / joelho / cintura | 200 / 5,00 | 80 / 5,10 | 0,025 → **0,064** |
+| tornozelo (pitch e roll) | 50 / 2,00 | 30 / 1,91 | 0,040 → **0,064** |
+
+O `kd` **absoluto é praticamente o mesmo** nas duas tasks (tornozelo 2,00 vs 1,91). O que muda é
+o `kp`, muito menor na `mimickit_steering` — e portanto a razão `kd/kp` da steering é **1,6× a
+2,5× MAIOR**. Em termos de amortecimento relativo ela é a mais amortecida das duas. `kd`
+insuficiente não explica o tremor.
+
+O que explica está no sinal de referência. Medindo o alvo que a política emite, 30 s a
+1,0 m/s, sem filtro nenhum:
+
+| junta | Δ mediano por passo | reversões de sinal /s |
+|---|---|---|
+| `Left_Hip_Pitch` | 0,204 rad | **16,7** |
+| `Left_Knee_Pitch` | 0,180 rad | 14,6 |
+| `Left_Ankle_Pitch` | 0,098 rad | 12,7 |
+| `Right_Ankle_Pitch` | 0,127 rad | 11,6 |
+
+A 30 Hz de atualização, **15 reversões/s é o máximo que um sinal não-aliasado pode mostrar**. O
+quadril passa disso. O alvo não está se movendo — está **vibrando na própria taxa de controle**,
+com ±6° no tornozelo.
+
+Três coisas fazem o tornozelo ser onde isso aparece, mesmo com o quadril chacoalhando mais:
+
+1. **A frequência natural do laço PD do tornozelo, com `kp=30`, é ~3,3 Hz em pitch** (estimada
+   de `dof_armature`), contra um dither de ~12 Hz. É um comando que o laço não consegue seguir e
+   só pode brigar contra.
+2. **O tornozelo do T1 é mecanismo paralelo** — pitch e roll dividem um par de motores
+   ([08 §4d](08-caminho-para-hardware-mimickit.md)). Dois dithers independentes comandados em
+   espaço de junta batem um contra o outro dentro do mesmo par.
+3. `kp=30` é o ganho mais baixo da perna, então é onde a autoridade é menor para começar.
+
+**Por que o MuJoCo não mostrou isso.** `T1_23dof.xml` declara `frictionloss: 0` e `damping: 0`
+nas 23 juntas ([08 §4d](08-caminho-para-hardware-mimickit.md), R12), e não há modelo de banda
+passante de atuador. Atrito seco, folga de engrenagem e a articulação paralela do tornozelo —
+tudo que converte um alvo que vibra em zumbido audível — **só existem no hardware**. É por isso
+que "não morde em sim" não implica "não morde no robô", e por que o teto de 120 rad/s do
+limitador de taxa, calibrado só com dados de simulação, não protegia disto.
+
+### O instrumento certo: passa-baixa, não limite de taxa
+
+O limitador de taxa limita **amplitude**; o problema do dither é **frequência**. Um passa-baixa
+de primeira ordem ataca a frequência direto — o fundamental da marcha é 1–2 Hz, então um corte
+em 6–8 Hz passa o movimento e remove o dither. Medido, 30 s a 1,0 m/s:
+
+| corte | reversões/s no tornozelo | Δ mediano | sobrevive | rastreio |
+|---|---|---|---|---|
+| desligado | 11,3 | 0,072 rad | 30 s ✓ | 88,3% |
+| 12 Hz | 8,4 | 0,063 | 30 s ✓ | 94,5% |
+| **8 Hz** | **7,5** | 0,057 | 30 s ✓ | 93,6% |
+| **6 Hz** | **6,8** | 0,057 | 30 s ✓ | 101,1% |
+| 4 Hz | 5,7 | 0,062 | 30 s ✓ | 114,2% |
+| 2 Hz | 5,4 | 0,058 | 30 s ✓ | **137,2%** |
+
+Corta o chacoalho pela metade e a marcha sobrevive. Mas leia a última coluna: abaixo de ~6 Hz o
+rastreamento **passa de 100% e dispara** — não é melhora, é a marcha sendo deformada, andando
+mais rápido que o comando. 8 Hz é a primeira tentativa conservadora; 6 Hz é a borda.
+
+`target_lowpass_hz` existe na `MimicKitSteeringPolicyCfg` e vem **desligado**. É instrumento de
+diagnóstico, não solução: se um run só funciona com ele ligado, isso é um achado sobre o
+checkpoint para levar ao retreino — o termo de suavidade de ação que falta no export — e não uma
+configuração para deixar ligada e esquecer.
+
+### Knobs no `deploy.py`
+
+O `teleop.py` tem flags de atuador desde `c463403`, mas é MuJoCo-only, e acabamos de ver que
+esta classe de falha não reproduz em MuJoCo. `scripts/deploy.py` agora tem as suas, aplicáveis a
+qualquer task e ecoadas no start (um run ajustado por flag e não registrado é uma medição que
+não se repete):
+
+```bash
+--kp-scale X --kd-scale X        # escala global
+--ankle-kp KP --ankle-kd KD      # absoluto, só nos 4 tornozelos
+--target-lowpass HZ              # passa-baixa no alvo ('none' desliga)
+--max-target-rate RAD_S          # teto de slew ('none' desliga)
+```
+
 ## 6. O que isto NÃO resolve
 
 Nada aqui toca a lacuna de observabilidade. No hardware, `booster_robot_controller.update_state`

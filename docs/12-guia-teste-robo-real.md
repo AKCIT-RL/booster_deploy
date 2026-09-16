@@ -214,8 +214,33 @@ METRICS policy_step:       freq≈30Hz      <- a política de fato rodou
 | `Falling detected, stopping policy for safety` | guard de queda funcionou (tronco >~60°) | comportamento correto. Se disparar cedo demais no pórtico por causa da suspensão, ajuste `fall_gravity_z`, **ciente** de que isso afrouxa o guard. |
 | Divergência em ~1 s com o robô no chão | lacuna de observabilidade (`root_h`/`root_vel`) | esperado. Ver [08](08-caminho-para-hardware-mimickit.md). Não é ajustável por ganho. |
 | `METRICS policy_step: count=0` | a inferência nunca rodou | a política morreu antes do primeiro passo; veja o traceback |
+| **Tremor / zumbido forte no tornozelo** ao entrar no RL gait | chatter do alvo, não `kd` — a política vibra o alvo a ~12 Hz ([11 §5a](11-dependencias-e-preflight.md)) | `--target-lowpass 8`. **Não** suba o `kd`: a razão kd/kp da steering já é 1,6–2,5× a da `t1_walk` |
 | `low_state_handler` bem abaixo de 500 Hz | link DDS saturado ou CPU competindo | feche o resto; confira `--net` |
 | Juntas na ordem errada / robô se contorce | ordem de juntas ou ganho por junta errado | aborte imediatamente via `kDamping`. Não repita. |
+
+### Receita de debug no robô (`deploy.py`)
+
+As flags abaixo existem porque o `teleop.py` é MuJoCo-only, e o MuJoCo **não reproduz** esta
+classe de falha: `T1_23dof.xml` tem `frictionloss: 0` e `damping: 0`, então atrito seco, folga e
+a articulação paralela do tornozelo só existem no robô.
+
+```bash
+# 1. linha de base, sem nada ligado — confirme o sintoma
+python3 scripts/deploy.py --task t1_mimickit_steering
+
+# 2. o alvo chacoalha? corte a frequência (primeira tentativa: 8 Hz)
+python3 scripts/deploy.py --task t1_mimickit_steering --target-lowpass 8
+
+# 3. ainda treme? 6 Hz é a borda; abaixo disso a marcha deforma
+python3 scripts/deploy.py --task t1_mimickit_steering --target-lowpass 6
+
+# 4. só então mexa em ganho, e no tornozelo especificamente
+python3 scripts/deploy.py --task t1_mimickit_steering --target-lowpass 8 --ankle-kd 3.0
+```
+
+Mude **uma coisa por run** e anote qual — as flags são ecoadas no start justamente para isso.
+Comece sempre pelo passa-baixa, não pelo `kd`: a razão `kd/kp` desta task já é maior que a da
+`t1_walk`, então subir `kd` está tratando o sintoma errado e custa rastreamento.
 
 ### Abortos, em ordem de preferência
 

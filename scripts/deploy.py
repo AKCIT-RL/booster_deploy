@@ -19,7 +19,81 @@ parser.add_argument("--webots", action="store_true", default=False,
 parser.add_argument(
     "--device", type=str, default="cpu",
     help="Device to run the evaluation on (e.g., 'cpu', 'cuda')")
+
+# --- Actuator / command tuning, for debugging ON THE ROBOT -------------------
+# These exist because teleop.py's equivalents are MuJoCo-only, and some failure
+# modes do not reproduce in MuJoCo at all: T1_23dof.xml declares zero
+# frictionloss and zero joint damping (docs/08 section 4d), so dry friction,
+# gear backlash and the ankle's parallel linkage — everything that turns a
+# chattering position target into an audible buzz — exist only on hardware.
+# Tuning there therefore needs knobs there.
+#
+# All of them scale or override what the task config already declares; none
+# invents a value. Every one is echoed at startup, because a run tuned by flag
+# and not recorded is a measurement you cannot repeat.
+tune = parser.add_argument_group("actuator tuning (debug)")
+tune.add_argument("--kp-scale", type=float, default=None, metavar="X",
+                  help="multiply every joint_stiffness by X")
+tune.add_argument("--kd-scale", type=float, default=None, metavar="X",
+                  help="multiply every joint_damping by X")
+tune.add_argument("--ankle-kd", type=float, default=None, metavar="KD",
+                  help="absolute joint_damping for the 4 ankle joints")
+tune.add_argument("--ankle-kp", type=float, default=None, metavar="KP",
+                  help="absolute joint_stiffness for the 4 ankle joints")
+tune.add_argument("--target-lowpass", type=str, default=None, metavar="HZ",
+                  help="first-order low-pass on the position target, in Hz "
+                       "('none' disables). Use against target chatter: it "
+                       "attacks the frequency content, which a rate limit "
+                       "does not.")
+tune.add_argument("--max-target-rate", type=str, default=None, metavar="RAD_S",
+                  help="slew ceiling for the position target ('none' disables)")
 args = parser.parse_args()
+
+
+def _apply_tuning(cfg):
+    """Apply the debug flags to a task cfg, and say what was applied."""
+    robot = cfg.robot
+    ankles = [i for i, n in enumerate(robot.joint_names) if "Ankle" in n]
+    changed = []
+
+    if args.kp_scale is not None:
+        robot.joint_stiffness = [k * args.kp_scale for k in robot.joint_stiffness]
+        changed.append("kp x{}".format(args.kp_scale))
+    if args.kd_scale is not None:
+        robot.joint_damping = [k * args.kd_scale for k in robot.joint_damping]
+        changed.append("kd x{}".format(args.kd_scale))
+    if args.ankle_kp is not None:
+        for i in ankles:
+            robot.joint_stiffness[i] = args.ankle_kp
+        changed.append("ankle kp={}".format(args.ankle_kp))
+    if args.ankle_kd is not None:
+        for i in ankles:
+            robot.joint_damping[i] = args.ankle_kd
+        changed.append("ankle kd={}".format(args.ankle_kd))
+
+    for flag, attr in (("target_lowpass", "target_lowpass_hz"),
+                       ("max_target_rate", "max_target_rate")):
+        raw = getattr(args, flag)
+        if raw is None:
+            continue
+        if not hasattr(cfg.policy, attr):
+            print("[tune] {} ignored: {} has no '{}'".format(
+                flag, type(cfg.policy).__name__, attr))
+            continue
+        value = None if raw.lower() == "none" else float(raw)
+        setattr(cfg.policy, attr, value)
+        changed.append("{}={}".format(attr, value))
+
+    if changed:
+        print("[tune] " + " | ".join(changed))
+        # The gains are what the operator is most likely to get wrong, so print
+        # the ones that matter rather than trusting the multiplier was intended.
+        knee = robot.joint_names.index("Left_Knee_Pitch")
+        print("[tune] joelho kp={:.1f} kd={:.3f} | tornozelo kp={:.1f} kd={:.3f}"
+              .format(robot.joint_stiffness[knee], robot.joint_damping[knee],
+                      robot.joint_stiffness[ankles[0]],
+                      robot.joint_damping[ankles[0]]))
+    return cfg
 
 
 def main():
@@ -52,6 +126,8 @@ def main():
 
     # Set device for policy
     task_cfg.policy.device = args.device
+
+    _apply_tuning(task_cfg)
 
     # decide how to run based on flags
     if args.mujoco:
