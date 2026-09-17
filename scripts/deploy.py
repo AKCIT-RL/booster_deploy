@@ -40,6 +40,15 @@ tune.add_argument("--ankle-kd", type=float, default=None, metavar="KD",
                   help="absolute joint_damping for the 4 ankle joints")
 tune.add_argument("--ankle-kp", type=float, default=None, metavar="KP",
                   help="absolute joint_stiffness for the 4 ankle joints")
+tune.add_argument("--kp", action="append", default=[], metavar="GRUPO=V",
+                  help="kp por grupo de atuador: 'arm=12', 'knee=200', "
+                       "'arm=x3' para multiplicar. Repetivel, e aceita varios "
+                       "separados por virgula. --list-groups mostra os nomes.")
+tune.add_argument("--kd", action="append", default=[], metavar="GRUPO=V",
+                  help="kd por grupo, mesma sintaxe de --kp")
+tune.add_argument("--list-groups", action="store_true", default=False,
+                  help="imprime os grupos de atuador da task e sai (use com "
+                       "--task; nada e enviado ao robo)")
 tune.add_argument("--target-lowpass", type=str, default=None, metavar="HZ",
                   help="first-order low-pass on the position target, in Hz "
                        "('none' disables). Use against target chatter: it "
@@ -113,6 +122,144 @@ def _apply_command(cfg):
           "acao do operador")
 
 
+# Grupos de atuador, pelos nomes de junta. Os sete primeiros são os grupos
+# FÍSICOS de docs/09 ("Os tres tetos, em numeros") - juntas que compartilham
+# atuador, catálogo e teto de torque. Os agregados abaixo existem porque é
+# assim que se fala do robô na prática ("os bracos", "as pernas"), e resolver
+# um agregado é mais seguro que digitar seis flags e esquecer uma.
+#
+# A ordem importa na impressão, não na resolução: um mesmo índice pode ser
+# alcançado por vários grupos, e a última flag na linha de comando é a que
+# vale, como em qualquer override.
+_GAIN_GROUPS = {
+    # grupos físicos
+    "head":        ("AAHead_yaw", "Head_pitch"),
+    "shoulder":    ("Shoulder",),
+    "elbow":       ("Elbow",),
+    "waist":       ("Waist",),
+    "hip_pitch":   ("Hip_Pitch",),
+    "hip_roll":    ("Hip_Roll",),
+    "hip_yaw":     ("Hip_Yaw",),
+    "knee":        ("Knee",),
+    "ankle_pitch": ("Ankle_Pitch",),
+    "ankle_roll":  ("Ankle_Roll",),
+    # agregados
+    "arm":         ("Shoulder", "Elbow"),
+    "hip":         ("Hip_",),
+    "ankle":       ("Ankle_",),
+    "leg":         ("Hip_", "Knee", "Ankle_"),
+    "all":         ("",),
+}
+
+
+def _group_indices(joint_names, group):
+    pats = _GAIN_GROUPS[group]
+    return [i for i, n in enumerate(joint_names)
+            if any(pt in n for pt in pats)]
+
+
+def _print_groups(joint_names):
+    print("grupos de atuador validos para --kp / --kd:")
+    for g in _GAIN_GROUPS:
+        idx = _group_indices(joint_names, g)
+        print("  {:12s} {:2d} juntas   {}".format(
+            g, len(idx), ", ".join(joint_names[i] for i in idx[:4])
+            + (" ..." if len(idx) > 4 else "")))
+
+
+def _parse_gain_specs(specs, joint_names, flag):
+    """['arm=12', 'knee=x2.5'] -> [(grupo, 'abs'|'mul', valor), ...].
+
+    Recusa em vez de ignorar: um grupo mal digitado que passasse batido
+    deixaria o operador convicto de ter mudado um ganho que segue no valor
+    antigo, e o run inteiro mediria a coisa errada.
+    """
+    out = []
+    for spec in specs:
+        for item in spec.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            if "=" not in item:
+                print("[tune] ERRO: --{} '{}' nao tem a forma GRUPO=VALOR"
+                      .format(flag, item))
+                sys.exit(1)
+            group, raw = item.split("=", 1)
+            group, raw = group.strip().lower(), raw.strip()
+            if group not in _GAIN_GROUPS:
+                print("[tune] ERRO: grupo '{}' desconhecido em --{}".format(
+                    group, flag))
+                _print_groups(joint_names)
+                sys.exit(1)
+            mode = "abs"
+            if raw[:1].lower() == "x":
+                mode, raw = "mul", raw[1:]
+            try:
+                value = float(raw)
+            except ValueError:
+                print("[tune] ERRO: valor '{}' em --{} {} nao e numerico"
+                      .format(raw, flag, item))
+                sys.exit(1)
+            if value < 0.0:
+                print("[tune] ERRO: --{} {} negativo".format(flag, item))
+                sys.exit(1)
+            out.append((group, mode, value))
+    return out
+
+
+def _apply_group_gains(cfg):
+    """kp/kd por grupo. Roda DEPOIS das flags globais e das de tornozelo, para
+    que a flag mais especifica vencha quando as duas forem passadas."""
+    robot = cfg.robot
+    names = list(robot.joint_names)
+    kp_specs = _parse_gain_specs(args.kp, names, "kp")
+    kd_specs = _parse_gain_specs(args.kd, names, "kd")
+    if not kp_specs and not kd_specs:
+        return
+
+    before_kp = list(robot.joint_stiffness)
+    before_kd = list(robot.joint_damping)
+
+    for specs, attr in ((kp_specs, "joint_stiffness"),
+                        (kd_specs, "joint_damping")):
+        vals = list(getattr(robot, attr))
+        for group, mode, value in specs:
+            for i in _group_indices(names, group):
+                vals[i] = vals[i] * value if mode == "mul" else value
+        setattr(robot, attr, vals)
+
+    touched_kp = {g for g, _, _ in kp_specs}
+    touched_kd = {g for g, _, _ in kd_specs}
+    print("[tune] ganhos por grupo:")
+    print("[tune]   {:12s} {:>5s} {:>9s} {:>9s} {:>9s} {:>9s} {:>8s}".format(
+        "grupo", "n", "kp_antes", "kp_depois", "kd_antes", "kd_depois", "kd/kp"))
+    for group in _GAIN_GROUPS:
+        if group not in touched_kp and group not in touched_kd:
+            continue
+        idx = _group_indices(names, group)
+        if not idx:
+            continue
+        i = idx[0]
+        kp_new = robot.joint_stiffness[i]
+        kd_new = robot.joint_damping[i]
+        print("[tune]   {:12s} {:5d} {:9.3f} {:9.3f} {:9.4f} {:9.4f} {:8.4f}"
+              .format(group, len(idx), before_kp[i], kp_new,
+                      before_kd[i], kd_new,
+                      (kd_new / kp_new) if kp_new else float("nan")))
+
+    # Mexer em kp sem mexer em kd muda o amortecimento do laço, e a task inteira
+    # é construída sobre uma razão kd/kp fixa (0.0637, de scripts/prepare_t1_asset
+    # no repo de treino). Subir kp sozinho reduz zeta na raiz de kp e é o caminho
+    # curto para um laço que oscila no robô e não oscilava em MuJoCo, onde esta
+    # fork zera kd. Avisar é barato; descobrir no tornozelo, não.
+    only_kp = touched_kp - touched_kd
+    if only_kp:
+        print("[tune]   AVISO: kp mudou sem kd em {} -> a razao kd/kp mudou e "
+              "zeta caiu".format(", ".join(sorted(only_kp))))
+        print("[tune]   para preservar a razao da task, passe tambem "
+              "--kd <grupo>=x<mesmo fator>")
+
+
 def _apply_tuning(cfg):
     """Apply the debug flags to a task cfg, and say what was applied."""
     robot = cfg.robot
@@ -133,6 +280,8 @@ def _apply_tuning(cfg):
         for i in ankles:
             robot.joint_damping[i] = args.ankle_kd
         changed.append("ankle kd={}".format(args.ankle_kd))
+
+    _apply_group_gains(cfg)
 
     for flag, attr in (("target_lowpass", "target_lowpass_hz"),
                        ("max_target_rate", "max_target_rate")):
@@ -188,6 +337,12 @@ def main():
     except KeyError:
         print(f"Unknown task '{args.task}'. Available tasks: {list(list_tasks().keys())}")
         sys.exit(1)
+
+    if args.list_groups:
+        # antes do device, do tuning e de qualquer coisa de rede: e uma
+        # consulta, nao um deploy
+        _print_groups(list(task_cfg.robot.joint_names))
+        sys.exit(0)
 
     # Set device for policy
     task_cfg.policy.device = args.device
