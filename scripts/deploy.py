@@ -47,7 +47,70 @@ tune.add_argument("--target-lowpass", type=str, default=None, metavar="HZ",
                        "does not.")
 tune.add_argument("--max-target-rate", type=str, default=None, metavar="RAD_S",
                   help="slew ceiling for the position target ('none' disables)")
+
+# --- Standing velocity command -----------------------------------------------
+# The command the policy receives with the operator's input at neutral, in
+# physical units. 0.0 (the default) leaves every path bit-identical to not
+# having these flags: on hardware the baseline is added after the remote's
+# normalized axes are scaled, so adding zero reproduces the old expression
+# exactly, and in MuJoCo the seed is the 0.0 it already was.
+#
+# These exist because the command is not state this process owns on hardware:
+# _low_state_handler rewrites it from the remote at ~500 Hz, so there is no
+# "set it once at startup" to be had. As a baseline it survives, and the remote
+# keeps authority to add to it or cancel it.
+#
+# SAFETY: a non-zero --vx means the robot walks as soon as the policy takes
+# over, with nobody touching the remote. Intended for a gantry run where the
+# operator is watching the robot rather than a keyboard.
+cmdv = parser.add_argument_group("standing velocity command")
+cmdv.add_argument("--vx", type=float, default=0.0, metavar="M_S",
+                  help="forward velocity with the remote at neutral [m/s]")
+cmdv.add_argument("--vy", type=float, default=0.0, metavar="M_S",
+                  help="lateral velocity with the remote at neutral [m/s]")
+cmdv.add_argument("--vyaw", type=float, default=0.0, metavar="RAD_S",
+                  help="yaw rate with the remote at neutral [rad/s]")
 args = parser.parse_args()
+
+
+def _apply_command(cfg):
+    """Write the standing velocity command onto the task cfg, and say so.
+
+    Echoed unconditionally when non-zero, because this is the one debug flag
+    that makes the robot move on its own: a run where nobody remembers a --vx
+    was passed is a run whose first second is unexplainable.
+    """
+    axes = (("vx", "lin_vel_x_init", "vx_max", "m/s"),
+            ("vy", "lin_vel_y_init", "vy_max", "m/s"),
+            ("vyaw", "ang_vel_yaw_init", "vyaw_max", "rad/s"))
+    requested = {flag: getattr(args, flag) for flag, _, _, _ in axes}
+    if not any(requested.values()):
+        return
+
+    if cfg.vel_command is None:
+        print("[cmd] --vx/--vy/--vyaw ignorados: a task '{}' nao tem "
+              "vel_command".format(args.task))
+        return
+
+    parts = []
+    for flag, attr, max_attr, unit in axes:
+        value = requested[flag]
+        if value == 0.0:
+            continue
+        limit = getattr(cfg.vel_command, max_attr)
+        if abs(value) > limit:
+            # Refuse rather than clamp: asking for more than the envelope is an
+            # operator error, and silently getting a different speed than the
+            # one typed is exactly how a run stops being reproducible.
+            print("[cmd] ERRO: --{} {} excede {}={} da task"
+                  .format(flag, value, max_attr, limit))
+            sys.exit(1)
+        setattr(cfg.vel_command, attr, value)
+        parts.append("{}={} {}".format(flag, value, unit))
+
+    print("[cmd] comando permanente com o controle neutro: " + " | ".join(parts))
+    print("[cmd] o robo comeca a se mover quando a politica assumir, sem "
+          "acao do operador")
 
 
 def _apply_tuning(cfg):
@@ -83,6 +146,8 @@ def _apply_tuning(cfg):
         value = None if raw.lower() == "none" else float(raw)
         setattr(cfg.policy, attr, value)
         changed.append("{}={}".format(attr, value))
+
+    _apply_command(cfg)
 
     if changed:
         print("[tune] " + " | ".join(changed))

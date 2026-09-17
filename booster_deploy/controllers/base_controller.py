@@ -96,9 +96,20 @@ class VelocityCommand(Commands):
         self.vy_max = cfg.vy_max
         self.vyaw_max = cfg.vyaw_max
 
-        self.lin_vel_x: float = 0.0
-        self.lin_vel_y: float = 0.0
-        self.ang_vel_yaw: float = 0.0
+        # Standing command; see VelocityCommandCfg for why it is a baseline and
+        # not only a seed. Kept as its own attribute rather than folded into
+        # lin_vel_* because update_vel_command overwrites those every step.
+        self.lin_vel_x_init = cfg.lin_vel_x_init
+        self.lin_vel_y_init = cfg.lin_vel_y_init
+        self.ang_vel_yaw_init = cfg.ang_vel_yaw_init
+
+        # seeded, not zeroed, so the first policy step already sees the
+        # baseline - on hardware that step happens before the first
+        # update_vel_command, and in MuJoCo nothing overwrites it until the
+        # operator types a triple
+        self.lin_vel_x: float = self.lin_vel_x_init
+        self.lin_vel_y: float = self.lin_vel_y_init
+        self.ang_vel_yaw: float = self.ang_vel_yaw_init
 
 
 class Policy:

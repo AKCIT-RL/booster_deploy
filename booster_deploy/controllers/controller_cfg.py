@@ -85,6 +85,32 @@ class VelocityCommandCfg:
     vy_max: float = 1.0
     vyaw_max: float = 1.0
 
+    # Standing command applied with the operator's input at neutral, in the
+    # physical units of the command (m/s, rad/s) - NOT normalized like the
+    # joystick axes. VelocityCommand seeds itself from these, so they are also
+    # the command the very first policy step sees. Set by deploy.py's
+    # --vx/--vy/--vyaw; 0.0 leaves every path bit-identical to not having them.
+    #
+    # Why a baseline and not only an initial value: on hardware the command is
+    # not state this process owns. _low_state_handler rewrites it from the
+    # remote on every /low_state callback (~500 Hz) and update_vel_command
+    # re-reads it every policy step, so a value merely seeded at construction
+    # is gone within ~2 ms and the flag would be a silent no-op there. As a
+    # baseline it survives, the remote keeps full authority to add to it or
+    # cancel it, and the sum stays clipped to the *_max envelope.
+    #
+    # In MuJoCo the same fields read as a true initial value, because
+    # MujocoController.update_vel_command only writes when stdin has a line:
+    # the seed persists until the operator types a triple, which then replaces
+    # it outright rather than adding to it.
+    #
+    # OPERATIONAL NOTE: a non-zero vx means the robot starts walking the moment
+    # the policy takes over, with no operator action. That is the point on a
+    # gantry and a hazard on the floor.
+    lin_vel_x_init: float = 0.0
+    lin_vel_y_init: float = 0.0
+    ang_vel_yaw_init: float = 0.0
+
 
 @configclass
 class PolicyCfg:

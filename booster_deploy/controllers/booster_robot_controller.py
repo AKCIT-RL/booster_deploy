@@ -486,9 +486,19 @@ class BoosterRobotController(BaseController):
     def update_vel_command(self):
         cmd = self.portal.synced_command.read()[0]
 
-        self.vel_command.lin_vel_x = cmd["vx"] * self.vel_command.vx_max
-        self.vel_command.lin_vel_y = cmd["vy"] * self.vel_command.vy_max
-        self.vel_command.ang_vel_yaw = cmd["vyaw"] * self.vel_command.vyaw_max
+        # The remote's axes are normalized [-1, 1]; the *_init baselines are
+        # already in physical units, so they are added AFTER the scaling, not
+        # before. The sum is clipped to the same envelope the axes alone obey,
+        # which is what keeps *_max meaning something once a baseline exists.
+        # With the baselines at 0 this is arithmetically the old expression:
+        # cmd["vx"] is in [-1, 1], so the clip cannot bind.
+        v = self.vel_command
+        v.lin_vel_x = min(max(cmd["vx"] * v.vx_max + v.lin_vel_x_init,
+                              -v.vx_max), v.vx_max)
+        v.lin_vel_y = min(max(cmd["vy"] * v.vy_max + v.lin_vel_y_init,
+                              -v.vy_max), v.vy_max)
+        v.ang_vel_yaw = min(max(cmd["vyaw"] * v.vyaw_max + v.ang_vel_yaw_init,
+                                -v.vyaw_max), v.vyaw_max)
 
     def update_state(self) -> None:
         state = self.portal.synced_state.read()[0]
