@@ -36,6 +36,18 @@ Observation layout (200 dims for the T1, 23 DOF, 5 key bodies):
 
     root_h(1) root_rot(6) root_vel(3) root_ang_vel(3)
     joint_rot(24 x 6) dof_vel(23) key_pos(5 x 3) | steering(5)
+
+Policies exported from the measurable-observation envs use a DIFFERENT layout,
+built by compute_measurable_frame below and stacked with a frame history by the
+caller. It carries only what the T1 can read on board, so root position, linear
+velocity and the key bodies (and with them the forward kinematics) drop out of
+the actor path entirely:
+
+    proj_gravity(3) base_ang_vel(3) joint_offset(23) joint_vel(23)
+    prev_action(23) | steering(5)                          = 80 dims
+
+Which of the two a checkpoint wants is read off the exported module itself, in
+mimickit_steering.py - the measurable ones carry a _frame_dim attribute.
 """
 
 import math
@@ -205,6 +217,54 @@ def steering_command(vel_x, vel_y, face_heading, tar_speed_min, tar_speed_max):
     face_dir = torch.tensor([math.cos(face_heading), math.sin(face_heading)],
                             dtype=torch.float32)
     return tar_dir, torch.tensor([tar_speed], dtype=torch.float32), face_dir
+
+
+def compute_measurable_frame(root_rot_wxyz, root_ang_vel_b,
+                             dof_pos, dof_vel, prev_action, init_dof_pos,
+                             tar_dir=None, tar_speed=None, face_dir=None):
+    """One measurable frame, exactly as the training env builds it.
+
+    Mirrors MimicKit's envs/steering_util.compute_proprio_frame, with one
+    deliberate difference: the angular velocity arrives ALREADY in the body
+    frame, which is what the controllers report. MimicKit takes it in the world
+    frame and rotates it in; asking the caller to rotate body -> world just so
+    this function could rotate it back would add a round trip and a chance to
+    get the convention wrong. compute_observation above does need the world
+    frame, which is why it rotates - do not copy that line into this path.
+
+    init_dof_pos is the pose the TRAINING env measured joint offsets against.
+    For these runs it is all zeros, so the block is the absolute joint position.
+    It is NOT the deploy config's default_joint_pos, which only sets the
+    starting pose of the PD loop: subtracting that would put a constant bias on
+    23 dims and nothing would report it.
+
+    Returns the 75-dim proprioceptive block, or the full 80-dim frame when the
+    steering command is supplied.
+    """
+    mk = _mimickit()
+    torch_util = mk["torch_util"]
+
+    root_rot = quat_wxyz_to_xyzw(root_rot_wxyz).reshape(1, 4)
+    inv_rot = torch_util.quat_conjugate(root_rot)
+
+    gravity = torch.zeros(1, 3, dtype=root_rot.dtype, device=root_rot.device)
+    gravity[..., 2] = -1.0
+    proj_gravity = torch_util.quat_rotate(inv_rot, gravity)
+
+    local_ang_vel = root_ang_vel_b.reshape(1, 3)
+    dof_offset = dof_pos.reshape(1, -1) - init_dof_pos.reshape(1, -1)
+
+    frame = torch.cat([proj_gravity, local_ang_vel, dof_offset,
+                       dof_vel.reshape(1, -1), prev_action.reshape(1, -1)], dim=-1)
+
+    if (tar_dir is None):
+        return frame.reshape(-1)
+
+    task_obs = mk["compute_steering_observations"](root_rot=root_rot,
+                                                   tar_dir=tar_dir.reshape(1, 2),
+                                                   tar_speed=tar_speed.reshape(1),
+                                                   face_dir=face_dir.reshape(1, 2))
+    return torch.cat([frame, task_obs], dim=-1).reshape(-1)
 
 
 def compute_observation(char_model, key_body_ids,

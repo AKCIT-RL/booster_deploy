@@ -14,14 +14,28 @@ HOW THIS DIFFERS FROM tasks/locomotion
                    no default pose and no action scale here, and adding one
                    would silently rescale every command.
 
-  memory           LocomotionPolicy stacks 10 frames. This one is memoryless -
-                   MimicKit's steering observation is a single frame - so there
-                   is no obs_history.
+  memory           depends on the checkpoint, see below. The older steering
+                   observation is a single frame; the measurable one stacks a
+                   frame history the way LocomotionPolicy does.
 
-  observation      53 privileged-free numbers there, 200 here, of a completely
-                   different kind (root height, tan-norm rotations, key body
-                   positions). observation.py builds them by calling MimicKit's
-                   own functions.
+  observation      53 privileged-free numbers there. Here it is one of two
+                   layouts, both built in observation.py.
+
+TWO OBSERVATION LAYOUTS, CHOSEN BY THE CHECKPOINT
+
+  legacy (200)     root height, tan-norm rotations, root linear velocity, key
+                   body positions + steering. Memoryless. Four of its numbers
+                   do not exist on hardware (see below).
+
+  measurable (80)  projected gravity, base angular velocity, joint offsets,
+                   joint velocities, previous action + steering, stacked as
+                   [current frame | H past frames]. Everything in it comes from
+                   the IMU, the encoders and the policy's own last output, so
+                   nothing has to be faked on hardware.
+
+Nothing configures this: the exported module carries a `_frame_dim` attribute
+in the measurable case and not in the legacy one, so __init__ reads the layout
+off the checkpoint. Pointing at the wrong one is therefore not possible.
 
 RATES AND GAINS ARE PART OF THE POLICY
 
@@ -32,6 +46,10 @@ same targets produce different motion. Hence policy_dt = 1/30 and decimation 4
 rather than the 50 Hz / 500 Hz defaults, and hence the gains are restated here
 instead of inherited from T1WalkControllerCfg, whose 200/5 belong to Booster's
 own policy.
+
+The rate is fixed at 30 Hz here, so a checkpoint trained at 50 Hz will load and
+run but be driven at the wrong period. Making policy_dt follow the checkpoint is
+its own change; until then, only use 30 Hz checkpoints.
 
 HANDOVER: THE POSE IS OURS, THE PREPARE GAINS ARE NOT
 
@@ -48,19 +66,23 @@ PREPARE STATE note in the controller cfg for the measurements.
 
 WHAT THIS STILL DOES NOT DO
 
-Runs under `--mujoco`. On hardware, 4 of the 200 dimensions are unavailable as
-booster_deploy ships: booster_robot_controller.update_state fills root_pos_w and
-root_lin_vel_w with zeros (only the IMU and the encoders are real), so root
-height and root linear velocity arrive as lies - a constant 0 where training saw
-~0.69 m and a constant 0 where it saw the speed it was asked for. Both are
-recoverable with stance-foot kinematic odometry, which belongs in this file -
-the exported policy needs no change for it.
+Runs under `--mujoco`. On hardware the LEGACY layout is short 4 numbers:
+booster_robot_controller.update_state fills root_pos_w and root_lin_vel_w with
+zeros (only the IMU and the encoders are real), so root height and root linear
+velocity arrive as lies - a constant 0 where training saw ~0.69 m and a constant
+0 where it saw the speed it was asked for. Both are recoverable with stance-foot
+kinematic odometry, which belongs in this file - the exported policy needs no
+change for it. The MEASURABLE layout does not have this problem at all: it never
+asks for either, which is the reason it exists.
 
-The fall guard and the rate limiter below do NOT close that gap, and were not
-built to. They bound what a fall costs and how abruptly the actuators are driven
-into it; the policy fed a wrong root state still walks into one. Nothing in this
-file makes the task deployable on the floor - see
+The fall guard, the rate limiter and the low-pass below do NOT close that gap,
+and were not built to. They bound what a fall costs and how abruptly the
+actuators are driven into it; the policy fed a wrong root state still walks into
+one. Nothing in this file makes the LEGACY task deployable on the floor - see
 docs/08-caminho-para-hardware-mimickit.md for what would.
+
+No measurable checkpoint exists yet, so that path is written and unexercised -
+see the note on MimicKitSteeringPolicy._compute_measurable_observation.
 """
 
 from __future__ import annotations
@@ -123,7 +145,11 @@ T1_TRAIN_POSE = [0, 0,
 
 
 class MimicKitSteeringPolicy(Policy):
-    """Memoryless steering policy: 200-dim observation in, joint targets out."""
+    """Steering policy: observation in, joint position targets out.
+
+    Carries frame history and the previous action only for measurable
+    checkpoints; for the legacy 200-dim ones it stays memoryless, as before.
+    """
 
     def __init__(self, cfg: MimicKitSteeringPolicyCfg, controller: BaseController):
         super().__init__(cfg, controller)
@@ -155,8 +181,34 @@ class MimicKitSteeringPolicy(Policy):
         self._lin_vel_is_world = obs_util.root_lin_vel_is_world(controller)
         self._face_heading = 0.0
 
+        # Which observation a checkpoint wants is read off the module itself:
+        # the measurable exports carry _frame_dim, the older 200-dim ones do
+        # not. No flag to get wrong, and the 16 older policies keep working.
+        self._frame_dim = getattr(self._model, "_frame_dim", None)
+        if (self._frame_dim is not None):
+            self._frame_dim = int(self._frame_dim)
+            obs_size = int(self._model._obs_mean.shape[0])
+            if (obs_size % self._frame_dim != 0):
+                raise ValueError(
+                    "checkpoint obs {} is not a whole number of {}-dim frames"
+                    .format(obs_size, self._frame_dim))
+            self._hist_steps = obs_size // self._frame_dim - 1
+
+            num_dofs = len(self.robot.cfg.joint_names)
+            # the training env measured joint offsets against its init_pose,
+            # whose 23 DOF entries are all zero - see observation.py
+            self._init_dof_pos = torch.zeros(num_dofs)
+            self._prev_action = torch.zeros(num_dofs)
+            self._frame_hist = None     # filled on the first observation
+
     def reset(self) -> None:
         self._face_heading = 0.0
+        if (self._frame_dim is not None):
+            # order matters, exactly as in the training env: zero the previous
+            # action FIRST, so the frame that refills the history is the one a
+            # fresh episode would see
+            self._prev_action.zero_()
+            self._frame_hist = None
         # The rate limiter's anchor. BaseController.run calls update_state()
         # before start(), so joint_pos here is the real measured pose at the end
         # of the prepare ramp - not an assumed one. Anchoring on the measurement
@@ -197,23 +249,72 @@ class MimicKitSteeringPolicy(Policy):
                   "to False.")
             self.controller.stop()
 
-    def compute_observation(self) -> torch.Tensor:
-        data = self.robot.data
+    def _steering_command(self):
+        command = self.controller.vel_command
+        self._face_heading += command.ang_vel_yaw * self.cfg.policy_dt
+        self._face_heading = math.atan2(math.sin(self._face_heading),
+                                        math.cos(self._face_heading))
+        return obs_util.steering_command(
+            command.lin_vel_x, command.lin_vel_y, self._face_heading,
+            self.cfg.tar_speed_min, self.cfg.tar_speed_max)
 
+    def _compute_measurable_observation(self) -> torch.Tensor:
+        """[current frame | H past frames, oldest first], the contract written
+        on the exported module itself.
+
+        WRITTEN AHEAD OF ITS PRODUCER. No exported checkpoint carries
+        `_frame_dim` yet, and the training-side change this mirrors (MimicKit's
+        measurable steering env and its `compute_proprio_frame`) is not on any
+        published ref - only the soccer env has that function today. So this
+        path is unexercised: it type-checks and it matches the contract as
+        described, and nothing more than that has been verified. Validate it
+        against the training env's own `_compute_measurable_frame` on identical
+        state before trusting it, the way tests/unit/test_deploy_key_bodies.py
+        validates the legacy path's forward kinematics.
+        """
+        data = self.robot.data
+        tar_dir, tar_speed, face_dir = self._steering_command()
+
+        frame = obs_util.compute_measurable_frame(
+            root_rot_wxyz=data.root_quat_w,
+            root_ang_vel_b=data.root_ang_vel_b,
+            dof_pos=data.joint_pos,
+            dof_vel=data.joint_vel,
+            prev_action=self._prev_action,
+            init_dof_pos=self._init_dof_pos,
+            tar_dir=tar_dir, tar_speed=tar_speed, face_dir=face_dir)
+
+        if (self._frame_hist is None):
+            # after a reset, repeat the first measured frame instead of zeros -
+            # the training env refills its history the same way, so a policy
+            # never sees a transient it was not trained through
+            self._frame_hist = frame.unsqueeze(0).repeat(self._hist_steps, 1)
+        else:
+            # roll with the CURRENT frame before assembling, so hist[-1] equals
+            # the current frame - that is what the training env produces, since
+            # it rolls in _update_task before recomputing the observation
+            self._frame_hist = torch.cat(
+                [self._frame_hist[1:], frame.unsqueeze(0)], dim=0)
+
+        return torch.cat([frame, self._frame_hist.reshape(-1)], dim=-1)
+
+    def compute_observation(self) -> torch.Tensor:
+        # BEFORE the layout dispatch, not inside either branch: the guard reads
+        # the IMU only, so it is the one part of this method that does not care
+        # which observation the checkpoint wants. Putting it after the dispatch
+        # is how a merge silently disarms it on one path.
         self._check_falling()
+
+        if (self._frame_dim is not None):
+            return self._compute_measurable_observation()
+
+        data = self.robot.data
 
         root_quat = obs_util.quat_wxyz_to_xyzw(data.root_quat_w)
         root_lin_vel_w = obs_util.root_lin_vel_to_world(
             root_quat, data.root_lin_vel_b, self._lin_vel_is_world)
 
-        command = self.controller.vel_command
-        self._face_heading += command.ang_vel_yaw * self.cfg.policy_dt
-        self._face_heading = math.atan2(math.sin(self._face_heading),
-                                        math.cos(self._face_heading))
-
-        tar_dir, tar_speed, face_dir = obs_util.steering_command(
-            command.lin_vel_x, command.lin_vel_y, self._face_heading,
-            self.cfg.tar_speed_min, self.cfg.tar_speed_max)
+        tar_dir, tar_speed, face_dir = self._steering_command()
 
         return obs_util.compute_observation(
             self._char_model, self._key_body_ids,
@@ -231,7 +332,19 @@ class MimicKitSteeringPolicy(Policy):
             # already the joint position target: unnormalized and clipped inside
             # the exported module. Do not add a default pose or an action scale.
             dof_targets = self._model(obs)
-        return self._rate_limit(self._lowpass(dof_targets))
+        dof_targets = self._rate_limit(self._lowpass(dof_targets))
+        if (self._frame_dim is not None):
+            # prev_action is fed back AFTER the filters, i.e. what was actually
+            # commanded - not the raw module output. The training env stores as
+            # prev_action the target it applied, so the faithful mirror of it is
+            # the target this file applies. With the shipped defaults the two
+            # are the same object anyway (low-pass off, rate limit unclipped
+            # returns its input), so this is bit-exact in the configuration the
+            # checkpoint was validated in; it only diverges when a filter is
+            # deliberately switched on, and there the commanded value is the
+            # honest one to report. Not a rescaling either way.
+            self._prev_action = dof_targets.detach().clone()
+        return dof_targets
 
     def _lowpass(self, dof_targets: torch.Tensor) -> torch.Tensor:
         """First-order low-pass on the position target. Off by default.
