@@ -207,6 +207,20 @@ def _parse_gain_specs(specs, joint_names, flag):
     return out
 
 
+def _span(values, fmt):
+    """Um numero se o grupo e uniforme, 'a-b' se nao.
+
+    Existe porque a versao anterior reportava `valores[idx[0]]` como se fosse o
+    grupo inteiro. Com `--kd ankle=5,ankle_pitch=2` isso imprimia "ankle -> 2"
+    enquanto o roll estava em 5: a tabela afirmava algo falso sobre o estado que
+    seria enviado ao robo, que e a unica coisa que ela existe para fazer.
+    """
+    lo, hi = min(values), max(values)
+    if abs(hi - lo) < 1e-9:
+        return fmt.format(lo)
+    return (fmt + "-" + fmt.strip()).format(lo, hi)
+
+
 def _apply_group_gains(cfg):
     """kp/kd por grupo. Roda DEPOIS das flags globais e das de tornozelo, para
     que a flag mais especifica vencha quando as duas forem passadas."""
@@ -220,10 +234,24 @@ def _apply_group_gains(cfg):
     before_kp = list(robot.joint_stiffness)
     before_kd = list(robot.joint_damping)
 
+    # Aplicar do grupo mais ABRANGENTE para o mais especifico, independente da
+    # ordem em que o operador digitou. Sem isto, `--kd ankle_pitch=2,ankle=5`
+    # e `--kd ankle=5,ankle_pitch=2` dao resultados diferentes, e so a segunda
+    # forma faz o que as duas parecem dizer. Um agregado que apaga o ajuste fino
+    # digitado antes dele e silencioso: os dois comandos rodam, o robo anda, e a
+    # medicao sai do tornozelo errado.
+    #
+    # Especificidade = numero de juntas atingidas. Empates (hip_pitch e
+    # ankle_pitch, ambos 2) nunca se sobrepoem, e o indice de digitacao desempata
+    # para a ordem ser deterministica.
+    def by_breadth(indexed_spec):
+        order, (group, _, _) = indexed_spec
+        return (-len(_group_indices(names, group)), order)
+
     for specs, attr in ((kp_specs, "joint_stiffness"),
                         (kd_specs, "joint_damping")):
         vals = list(getattr(robot, attr))
-        for group, mode, value in specs:
+        for _, (group, mode, value) in sorted(enumerate(specs), key=by_breadth):
             for i in _group_indices(names, group):
                 vals[i] = vals[i] * value if mode == "mul" else value
         setattr(robot, attr, vals)
@@ -231,7 +259,7 @@ def _apply_group_gains(cfg):
     touched_kp = {g for g, _, _ in kp_specs}
     touched_kd = {g for g, _, _ in kd_specs}
     print("[tune] ganhos por grupo:")
-    print("[tune]   {:12s} {:>5s} {:>9s} {:>9s} {:>9s} {:>9s} {:>8s}".format(
+    print("[tune]   {:12s} {:>5s} {:>9s} {:>9s} {:>9s} {:>9s} {:>9s}".format(
         "grupo", "n", "kp_antes", "kp_depois", "kd_antes", "kd_depois", "kd/kp"))
     for group in _GAIN_GROUPS:
         if group not in touched_kp and group not in touched_kd:
@@ -239,25 +267,44 @@ def _apply_group_gains(cfg):
         idx = _group_indices(names, group)
         if not idx:
             continue
-        i = idx[0]
-        kp_new = robot.joint_stiffness[i]
-        kd_new = robot.joint_damping[i]
-        print("[tune]   {:12s} {:5d} {:9.3f} {:9.3f} {:9.4f} {:9.4f} {:8.4f}"
-              .format(group, len(idx), before_kp[i], kp_new,
-                      before_kd[i], kd_new,
-                      (kd_new / kp_new) if kp_new else float("nan")))
+        kp_new = [robot.joint_stiffness[i] for i in idx]
+        kd_new = [robot.joint_damping[i] for i in idx]
+        ratio = [d / p if p else float("nan") for p, d in zip(kp_new, kd_new)]
+        print("[tune]   {:12s} {:5d} {:>9s} {:>9s} {:>9s} {:>9s} {:>9s}".format(
+            group, len(idx),
+            _span([before_kp[i] for i in idx], "{:.3f}"),
+            _span(kp_new, "{:.3f}"),
+            _span([before_kd[i] for i in idx], "{:.4f}"),
+            _span(kd_new, "{:.4f}"),
+            _span(ratio, "{:.4f}")))
+        # Um grupo agregado que sai heterogeneo quase sempre e ajuste fino
+        # sobrevivendo por baixo, que e o comportamento desejado - mas dizer isso
+        # e mais barato que deixar o operador decidir se e bug.
+        if len(set(kd_new)) > 1 or len(set(kp_new)) > 1:
+            print("[tune]   {:12s} {:>5s} (heterogeneo: um grupo mais especifico "
+                  "venceu em parte dele)".format("", ""))
 
     # Mexer em kp sem mexer em kd muda o amortecimento do laço, e a task inteira
     # é construída sobre uma razão kd/kp fixa (0.0637, de scripts/prepare_t1_asset
     # no repo de treino). Subir kp sozinho reduz zeta na raiz de kp e é o caminho
     # curto para um laço que oscila no robô e não oscilava em MuJoCo, onde esta
     # fork zera kd. Avisar é barato; descobrir no tornozelo, não.
-    only_kp = touched_kp - touched_kd
+    # Comparado por JUNTA, nao por nome de grupo: `--kp ankle=50 --kd
+    # ankle_pitch=...,ankle_roll=...` cobre as quatro juntas, e a versao por nome
+    # avisava assim mesmo porque "ankle" nao esta literalmente em touched_kd. Um
+    # aviso que dispara quando nao devia treina o operador a ignora-lo, e este
+    # existe para pegar uma queda real de zeta.
+    kp_joints = {i for g in touched_kp for i in _group_indices(names, g)}
+    kd_joints = {i for g in touched_kd for i in _group_indices(names, g)}
+    only_kp = sorted(kp_joints - kd_joints)
     if only_kp:
         print("[tune]   AVISO: kp mudou sem kd em {} -> a razao kd/kp mudou e "
-              "zeta caiu".format(", ".join(sorted(only_kp))))
+              "zeta caiu por sqrt(kp)".format(
+                  ", ".join(names[i] for i in only_kp[:4])
+                  + (" ..." if len(only_kp) > 4 else "")))
         print("[tune]   para preservar a razao da task, passe tambem "
-              "--kd <grupo>=x<mesmo fator>")
+              "--kd <grupo>=x<mesmo fator>; para seguir a formula da Booster, "
+              "kd = 2*zeta*sqrt(kp*J_eq) (docs/14)")
 
 
 def _apply_tuning(cfg):
@@ -300,13 +347,22 @@ def _apply_tuning(cfg):
 
     if changed:
         print("[tune] " + " | ".join(changed))
-        # The gains are what the operator is most likely to get wrong, so print
-        # the ones that matter rather than trusting the multiplier was intended.
-        knee = robot.joint_names.index("Left_Knee_Pitch")
-        print("[tune] joelho kp={:.1f} kd={:.3f} | tornozelo kp={:.1f} kd={:.3f}"
-              .format(robot.joint_stiffness[knee], robot.joint_damping[knee],
-                      robot.joint_stiffness[ankles[0]],
-                      robot.joint_damping[ankles[0]]))
+    # Sempre, nao so quando `changed`: as flags de grupo nao alimentam `changed`,
+    # e esta e a unica linha que mostra o que de fato vai para o MotorCmd.
+    #
+    # Pitch e roll aparecem separados porque sao slots independentes no LowCmd
+    # (15/16 e 21/22 sob CMD_TYPE_SERIAL) e porque suas inercias de junta diferem
+    # por 3,33x, entao o mesmo kd produz zeta bem diferente nos dois - ver
+    # docs/14. Imprimir so um deles, como esta linha fazia, esconde exatamente a
+    # assimetria que esta task precisa ajustar.
+    def _one(joint):
+        i = robot.joint_names.index(joint)
+        return robot.joint_stiffness[i], robot.joint_damping[i]
+
+    print("[tune] joelho kp={:.1f} kd={:.3f} | ankle_pitch kp={:.1f} kd={:.3f} "
+          "| ankle_roll kp={:.1f} kd={:.3f}".format(
+              *_one("Left_Knee_Pitch"), *_one("Left_Ankle_Pitch"),
+              *_one("Left_Ankle_Roll")))
     return cfg
 
 
