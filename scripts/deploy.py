@@ -17,6 +17,10 @@ parser.add_argument("--mujoco", action="store_true", default=False,
 parser.add_argument("--webots", action="store_true", default=False,
                     help="deploy in webots simulation")
 parser.add_argument(
+    "--checkpoint", type=str, default=None,
+    help="policy checkpoint path (default: cfg.policy.checkpoint_path, "
+         "relative to the task dir unless absolute)")
+parser.add_argument(
     "--device", type=str, default="cpu",
     help="Device to run the evaluation on (e.g., 'cpu', 'cuda')")
 
@@ -54,6 +58,9 @@ tune.add_argument("--target-lowpass", type=str, default=None, metavar="HZ",
                        "('none' disables). Use against target chatter: it "
                        "attacks the frequency content, which a rate limit "
                        "does not.")
+tune.add_argument("--hip-yaw-limit", type=str, default=None, metavar="BASE[,GAIN]",
+                  help="cap the hip-yaw targets to default +/- (BASE + "
+                       "GAIN*|yaw_cmd|) rad, e.g. '0.05,0.3' ('none' disables)")
 tune.add_argument("--max-target-rate", type=str, default=None, metavar="RAD_S",
                   help="slew ceiling for the position target ('none' disables)")
 
@@ -343,6 +350,23 @@ def _apply_tuning(cfg):
         setattr(cfg.policy, attr, value)
         changed.append("{}={}".format(attr, value))
 
+    if args.hip_yaw_limit is not None:
+        if not hasattr(cfg.policy, "hip_yaw_limit"):
+            print("[tune] hip_yaw_limit ignored: {} has no 'hip_yaw_limit'".format(
+                type(cfg.policy).__name__))
+        elif args.hip_yaw_limit.lower() == "none":
+            cfg.policy.hip_yaw_limit = None
+            changed.append("hip_yaw_limit=None")
+        else:
+            parts = [float(v) for v in args.hip_yaw_limit.split(",")]
+            if len(parts) not in (1, 2) or any(v < 0.0 for v in parts):
+                print("[tune] ERRO: --hip-yaw-limit espera BASE[,GAIN] >= 0, "
+                      "recebeu '{}'".format(args.hip_yaw_limit))
+                sys.exit(1)
+            base, gain = parts[0], (parts[1] if len(parts) == 2 else 0.0)
+            cfg.policy.hip_yaw_limit = (base, gain)
+            changed.append("hip_yaw_limit={:.3f}+{:.3f}*|yaw| rad".format(base, gain))
+
     _apply_command(cfg)
 
     if changed:
@@ -402,6 +426,12 @@ def main():
 
     # Set device for policy
     task_cfg.policy.device = args.device
+    if args.checkpoint is not None:
+        if not hasattr(task_cfg.policy, "checkpoint_path"):
+            print("[deploy] ERRO: --checkpoint: {} nao tem 'checkpoint_path'"
+                  .format(type(task_cfg.policy).__name__))
+            sys.exit(1)
+        task_cfg.policy.checkpoint_path = args.checkpoint
 
     _apply_tuning(task_cfg)
 

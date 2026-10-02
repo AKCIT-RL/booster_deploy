@@ -332,7 +332,8 @@ class MimicKitSteeringPolicy(Policy):
             # already the joint position target: unnormalized and clipped inside
             # the exported module. Do not add a default pose or an action scale.
             dof_targets = self._model(obs)
-        dof_targets = self._rate_limit(self._lowpass(dof_targets))
+        dof_targets = self._hip_yaw_clamp(
+            self._rate_limit(self._lowpass(dof_targets)))
         if (self._frame_dim is not None):
             # prev_action is fed back AFTER the filters, i.e. what was actually
             # commanded - not the raw module output. The training env stores as
@@ -344,6 +345,33 @@ class MimicKitSteeringPolicy(Policy):
             # deliberately switched on, and there the commanded value is the
             # honest one to report. Not a rescaling either way.
             self._prev_action = dof_targets.detach().clone()
+        return dof_targets
+
+    def _hip_yaw_clamp(self, dof_targets: torch.Tensor) -> torch.Tensor:
+        """Cap how far the hip-yaw targets may leave the default pose. Off by default.
+
+            |target - default| <= base + gain * |ang_vel_yaw|
+
+        so walking straight keeps the hip yaw near neutral while a turn still
+        gets the range it needs. The checkpoint was not trained against this
+        cap and will push into it; it is a deploy-side experiment, not a fix.
+        """
+        if (self.cfg.hip_yaw_limit is None):
+            return dof_targets
+        base, gain = self.cfg.hip_yaw_limit
+        if (not hasattr(self, "_hip_yaw_ids")):
+            names = list(self.robot.cfg.joint_names)
+            self._hip_yaw_ids = [names.index(n)
+                                 for n in ("Left_Hip_Yaw", "Right_Hip_Yaw")]
+            self._hip_yaw_default = torch.as_tensor(
+                self.robot.cfg.default_joint_pos, dtype=dof_targets.dtype,
+                device=dof_targets.device)[self._hip_yaw_ids]
+        cap = base + gain * abs(self.controller.vel_command.ang_vel_yaw)
+        dof_targets = dof_targets.clone()
+        ids = self._hip_yaw_ids
+        dof_targets[..., ids] = torch.clamp(dof_targets[..., ids],
+                                            self._hip_yaw_default - cap,
+                                            self._hip_yaw_default + cap)
         return dof_targets
 
     def _lowpass(self, dof_targets: torch.Tensor) -> torch.Tensor:
@@ -498,6 +526,12 @@ class MimicKitSteeringPolicyCfg(PolicyCfg):
     # for and why it does not ship enabled. Reachable on the robot with
     # `deploy.py --target-lowpass 6`, which is where it is meant to be used.
     target_lowpass_hz: float | None = None
+
+    # (base [rad], gain [rad per rad/s]) cap on the hip-yaw targets around the
+    # default pose, widening with the commanded yaw rate; None = off. See
+    # MimicKitSteeringPolicy._hip_yaw_clamp. `--hip-yaw-limit BASE[,GAIN]` in
+    # deploy.py and teleop.py.
+    hip_yaw_limit: tuple[float, float] | None = None
 
 
 @configclass
