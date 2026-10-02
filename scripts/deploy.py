@@ -21,6 +21,23 @@ parser.add_argument(
     help="policy checkpoint path (default: cfg.policy.checkpoint_path, "
          "relative to the task dir unless absolute)")
 parser.add_argument(
+    "--effort", type=str, default=None, choices=("urdf", "derated", "catalog"),
+    help="--mujoco only: torque ceiling the simulated PD loop clips at. 'urdf' "
+         "is the task's own (what the policy trained against), 'derated' is what "
+         "the firmware enforces, 'catalog' is the actuator datasheet peak. Same "
+         "meaning as teleop.py --effort (controllers.apply_effort_source). On the "
+         "robot the firmware sets the ceiling, so this is refused there.")
+parser.add_argument(
+    "--pd", type=str, default=None, choices=("explicit", "implicit", "none"),
+    help="--mujoco only: damping scheme, as in teleop.py --pd "
+         "(tasks/mimickit_steering/controllers.py). Omitted = upstream "
+         "MujocoController, which zeroes kd and so runs the T1 undamped; "
+         "'explicit' is what the policy trained against.")
+parser.add_argument(
+    "--tn", action="store_true", default=False,
+    help="--mujoco only: catalogue torque-speed falloff, as in teleop.py --tn "
+         "(controllers.apply_tn_curve)")
+parser.add_argument(
     "--device", type=str, default="cpu",
     help="Device to run the evaluation on (e.g., 'cpu', 'cuda')")
 
@@ -435,18 +452,51 @@ def main():
 
     _apply_tuning(task_cfg)
 
+    # Sim-only actuator model, mirroring teleop.py. None of these reach the
+    # robot: effort_limit and the T-N curve are enforced by the motor board, and
+    # the damping scheme is a MuJoCo integration choice - on hardware kd is sent
+    # in the MotorCmd and applied by the firmware. Refused there rather than
+    # ignored, so the startup line never claims a setting that is not in effect.
+    sim_only = [f for f, on in (("--effort", args.effort is not None),
+                                ("--pd", args.pd is not None),
+                                ("--tn", args.tn)) if on]
+    if sim_only and not args.mujoco:
+        print("[deploy] ERRO: {} so vale(m) com --mujoco; no robo o firmware "
+              "aplica teto de torque, curva T-N e kd".format(", ".join(sim_only)))
+        sys.exit(1)
+    if args.effort is not None or args.tn:
+        from tasks.mimickit_steering.controllers import (
+            apply_effort_source, apply_tn_curve)
+        if args.effort is not None:
+            apply_effort_source(task_cfg, args.effort)
+        apply_tn_curve(task_cfg, args.tn)
+        eff = task_cfg.robot.effort_limit
+        print("[deploy] effort={} | teto {:.1f}..{:.1f} Nm | tn={}".format(
+            args.effort or "task", min(eff), max(eff), args.tn))
+
     # decide how to run based on flags
     if args.mujoco:
         # run mujoco controller
-        from booster_deploy.controllers.mujoco_controller import MujocoController
-
-        MujocoController(task_cfg).run()
+        if args.pd is not None:
+            from tasks.mimickit_steering.controllers import CONTROLLERS
+            base_cls = CONTROLLERS[args.pd]
+        else:
+            from booster_deploy.controllers.mujoco_controller import MujocoController
+            base_cls = MujocoController
+            print("[deploy] MujocoController upstream: kd=0 no laco PD e "
+                  "dof_damping=0 no XML -> sem amortecimento (use --pd explicit)")
+        if task_cfg.vel_command is not None:
+            # teleop.py's W/X A/D Q/E Z P keys, chained into the viewer's own
+            # callback so Space/Backspace/S/L/R/G keep working
+            from tasks.mimickit_steering.teleop import make_keyboard_controller
+            base_cls = make_keyboard_controller(base_cls)
+        base_cls(task_cfg).run()
     else:
         # initialize network and run robot portal
         try:
             from booster_robotics_sdk_python import ChannelFactory  # type: ignore
             ChannelFactory.Instance().Init(0, args.net)
-        except ImportError as e:
+        except ImportError:
             print(
                 "Error: booster_robotics_sdk_python is not installed.\n"
                 "Please install it to use real robot deployment.\n"
