@@ -67,7 +67,9 @@ sys.path.insert(0, os.path.abspath(
 
 from tasks.mimickit_steering.controllers import (  # noqa: E402
     CONTROLLERS, DEGRADE_MODES, DEGRADE_NONE, EFFORT_SOURCES, EFFORT_URDF,
-    apply_effort_source, apply_tn_curve, make_degraded)
+    IMU_NOISE_NONE, IMU_NOISE_PRESETS,
+    apply_effort_source, apply_tn_curve, make_degraded, make_noisy_imu,
+    parse_hip_yaw_limit, parse_imu_noise)
 
 VX_STEP = 0.1
 VY_STEP = 0.1
@@ -158,7 +160,10 @@ def make_keyboard_controller(base_cls):
                 return real_launch(model, data, *args, key_callback=chained, **kwargs)
 
             print(HELP, flush=True)
-            print(self.describe_pd(), flush=True)
+            # the upstream MujocoController (deploy.py --mujoco without --pd)
+            # has no describe_pd
+            if hasattr(self, "describe_pd"):
+                print(self.describe_pd(), flush=True)
             mujoco.viewer.launch_passive = launch_with_velocity_keys
             try:
                 return super().run()
@@ -191,6 +196,26 @@ def main():
     parser.add_argument("--degrade", default=DEGRADE_NONE, choices=sorted(DEGRADE_MODES),
                         help="'zero_root' zeroes root_pos_w and root_lin_vel_b, exactly "
                              "what the hardware reports (see controllers.make_degraded)")
+    parser.add_argument("--imu-noise", dest="imu_noise", default=IMU_NOISE_NONE,
+                        metavar="SPEC",
+                        help="corrupt the simulated IMU: '{}' (default), a "
+                             "preset ({}), or KEY=VALUE pairs - e.g. "
+                             "'typical,pitch_bias_deg=3' or "
+                             "'pitch_bias_deg=3'. Only root_quat_w and "
+                             "root_ang_vel_b are touched; the PD loop keeps "
+                             "reading true encoders, as the firmware does."
+                             .format(IMU_NOISE_NONE,
+                                     "/".join(sorted(IMU_NOISE_PRESETS))))
+    parser.add_argument("--imu-seed", dest="imu_seed", type=int, default=0,
+                        help="seed for the per-run IMU constants (bias, drift). "
+                             "A preset is a RANGE: two seeds lean the robot "
+                             "different ways, so the seed is part of the "
+                             "result and is printed with it.")
+    parser.add_argument("--hip-yaw-limit", dest="hip_yaw_limit", default=None,
+                        metavar="BASE[,GAIN]",
+                        help="cap the hip-yaw targets to default +/- (BASE + "
+                             "GAIN*|yaw_cmd|) rad, e.g. '0.05,0.3'. Off by "
+                             "default (see MimicKitSteeringPolicy._hip_yaw_clamp)")
     parser.add_argument("--vx", type=float, default=0.0)
     parser.add_argument("--vy", type=float, default=0.0)
     parser.add_argument("--yaw", type=float, default=0.0)
@@ -210,10 +235,14 @@ def main():
         cfg.policy.checkpoint_path = args.checkpoint
     apply_effort_source(cfg, args.effort)
     apply_tn_curve(cfg, args.tn)
+    cfg.policy.hip_yaw_limit = parse_hip_yaw_limit(args.hip_yaw_limit)
 
     base = make_degraded(CONTROLLERS[args.pd], args.degrade)
+    base = make_noisy_imu(base, parse_imu_noise(args.imu_noise), args.imu_seed)
     controller = make_keyboard_controller(base)(cfg)
-    print(f"[exp] pd={args.pd}  effort={args.effort}  tn={args.tn}  degrade={args.degrade}")
+    print(f"[exp] pd={args.pd}  effort={args.effort}  tn={args.tn}  "
+          f"degrade={args.degrade}  imu_noise={args.imu_noise}  "
+          f"hip_yaw_limit={args.hip_yaw_limit}")
     controller.vel_command.lin_vel_x = args.vx
     controller.vel_command.lin_vel_y = args.vy
     controller.vel_command.ang_vel_yaw = args.yaw
