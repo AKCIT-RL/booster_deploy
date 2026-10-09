@@ -89,7 +89,6 @@ from __future__ import annotations
 
 import math
 import os
-import sys
 
 import torch
 
@@ -397,11 +396,16 @@ class MimicKitSteeringPolicy(Policy):
         of 5-8 Hz passes the motion and removes the dither.
 
         Kept OFF by default because it changes the closed loop the checkpoint
-        was validated in, and because the right fix is upstream: MimicKit's
-        export has no action-smoothness term, so the chatter is baked into the
-        checkpoint. This is a diagnostic instrument, not a solution - if a run
-        only works with it on, that is a finding about the checkpoint to carry
-        into retraining, not a setting to leave enabled and forget.
+        was validated in, and because the right fix is upstream: MimicKit has no
+        action-rate penalty ANYWHERE, so the chatter is baked into the
+        checkpoint. Note this is an absence, not a disabled knob - the agent's
+        `action_reg_weight` looks like the thing to turn on and is not, because
+        `a_dist.param_reg()` regularises action MAGNITUDE, not its rate. Adding
+        smoothness is a code change in the agent. See docs/15 section 4.
+
+        So this is a diagnostic instrument, not a solution - if a run only works
+        with it on, that is a finding about the checkpoint to carry into
+        retraining, not a setting to leave enabled and forget.
         """
         fc = self.cfg.target_lowpass_hz
         if (fc is None):
@@ -515,10 +519,11 @@ class MimicKitSteeringPolicyCfg(PolicyCfg):
     # quietly reshape the closed loop the checkpoint was validated in - which is
     # worse, because the run still looks like it worked.
     #
-    # The real lesson is about the policy, not the limit: MimicKit's export has
-    # no action-smoothness term, so target chatter is baked into the checkpoint.
-    # Bounding the actuator transient properly means retraining with one, not
-    # filtering it here. See docs/11 section 5.
+    # The real lesson is about the policy, not the limit: MimicKit has no
+    # action-rate penalty anywhere - not a disabled one, an absent one - so
+    # target chatter is baked into the checkpoint. Bounding the actuator
+    # transient properly means writing that term and retraining, not filtering
+    # it here. See docs/11 section 5a and docs/15 section 4.
     max_target_rate: float | None = 120.0
 
     # Cutoff [Hz] of a first-order low-pass on the position target; None = off,
