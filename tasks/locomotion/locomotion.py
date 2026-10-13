@@ -67,7 +67,7 @@ class LocomotionPolicy(Policy):
                       "You can disable safety fallback by setting "
                       f"{self.cfg.__class__.__name__}.enable_safety_fallback "
                       "to False.")
-                self.controller.stop()
+                self.controller.stop(reason="fall")
 
         # Get velocity commands
         lin_vel_x = self.controller.vel_command.lin_vel_x

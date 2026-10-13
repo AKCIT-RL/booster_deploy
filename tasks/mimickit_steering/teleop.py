@@ -37,6 +37,13 @@ forward in about a second - see controllers.make_degraded.
 trained against, `derated` is what the firmware actually enforces. `derated`
 isolates that one hardware constraint - see controllers.apply_effort_source.
 
+--teleop keyboard drives the policy from the TERMINAL with the same
+teleop_twist_keyboard-style layout `deploy.py --teleop keyboard` uses on the
+robot (u i o / j k l / m , . ; Enter = simulated damping), with its safe
+envelope and ramp (--safe-vx, --teleop-accel, ...). The default, `viewer`, is
+the W/X A/D Q/E keys in the MuJoCo window described above. See
+docs/17-teleop-teclado.md.
+
 --checkpoint overrides the policy checkpoint (default: mimickit_steering.py's
 MimicKitSteeringPolicyCfg.checkpoint_path). Relative paths resolve against the
 task dir, same as the config default.
@@ -57,6 +64,7 @@ from __future__ import annotations
 import math
 import os
 import sys
+import time
 
 import mujoco
 import mujoco.viewer
@@ -174,6 +182,128 @@ def make_keyboard_controller(base_cls):
     return KeyboardController
 
 
+def make_terminal_teleop_controller(base_cls, limits=None):
+    """Drive any MujocoController subclass with the robot's TERMINAL keys.
+
+    The same KeyboardTeleop (booster_deploy/utils/keyboard_teleop.py) that
+    `deploy.py --teleop keyboard` uses on the T1, so the layout, the safe
+    envelope and the ramp rehearsed here are the ones used on the robot. Type
+    in the TERMINAL, not in the viewer window; the viewer's own keys (Space,
+    Backspace, S/L, R, G) keep working in the window.
+
+    Enter, and the fall guard, put the sim in SIMULATED DAMPING: the policy is
+    no longer called and every joint gets tau = -kd*qd with kd from
+    prepare_state.damping and kp = 0 - an approximation of the firmware's
+    damping mode, there so the operator sees what Enter does before pressing
+    it on the robot. Backspace (the viewer's reset) leaves damping and restarts
+    the policy, which the robot cannot do.
+
+    There are no phases here: the policy runs from the first step, so 'x' and
+    'r' are plain teleop keys ('x' = linear -10%).
+    """
+    from booster_deploy.utils.keyboard_teleop import (
+        HELP as TELEOP_HELP, KeyboardTeleop, TerminalKeyReader,
+        EVENT_DAMPING, PHASE_DAMPING)
+
+    class TerminalTeleopController(base_cls):
+
+        def __init__(self, cfg):
+            super().__init__(cfg)
+            if (self.vel_command is None):
+                raise ValueError("--teleop keyboard: a task nao tem vel_command")
+            self.teleop = KeyboardTeleop(limits)
+            self._damping_kd = np.asarray(
+                self.cfg.robot.prepare_state.damping, dtype=np.float64)
+            self._status_t = 0.0
+            # Leave damping on every policy reset: start() and the viewer's
+            # Backspace both go through policy.reset(), and wrapping it here
+            # (rather than the key) means the flag can never be cleared one
+            # step before the physics is actually reset.
+            policy_reset = self.policy.reset
+
+            def reset_and_resume():
+                if (self.teleop.phase == PHASE_DAMPING):
+                    print("\n[teleop] reset: saindo do damping, politica reiniciada",
+                          flush=True)
+                self.teleop.resume()
+                policy_reset()
+
+            self.policy.reset = reset_and_resume
+
+        @property
+        def damping(self):
+            return self.teleop.phase == PHASE_DAMPING
+
+        def _on_key(self, ch):
+            if (self.teleop.handle_key(ch) == EVENT_DAMPING):
+                print("\n[teleop] ENTER -> DAMPING simulado (Backspace na janela "
+                      "do viewer reinicia)", flush=True)
+            else:
+                print("\r\033[K" + self.teleop.status_line(), end="", flush=True)
+
+        def update_vel_command(self):
+            # replaces MujocoController's stdin line reader: both would fight
+            # over the same stdin, and this one owns it in cbreak mode
+            cmd = self.vel_command
+            vx, vy, vyaw = self.teleop.step(self.cfg.policy_dt)
+            # the --vx/--vy/--vyaw baseline, as on the robot
+            cmd.lin_vel_x = float(np.clip(vx + cmd.lin_vel_x_init, -cmd.vx_max, cmd.vx_max))
+            cmd.lin_vel_y = float(np.clip(vy + cmd.lin_vel_y_init, -cmd.vy_max, cmd.vy_max))
+            cmd.ang_vel_yaw = float(np.clip(vyaw + cmd.ang_vel_yaw_init,
+                                            -cmd.vyaw_max, cmd.vyaw_max))
+            # repaint at ~5 Hz so the ramp is visible without flooding
+            now = time.monotonic()
+            if (not self.damping and now - self._status_t > 0.2):
+                self._status_t = now
+                print("\r\033[K" + self.teleop.status_line(), end="", flush=True)
+
+        def stop(self, reason=None):
+            if (reason == "fall"):
+                if (not self.damping):
+                    print("\n[teleop] queda detectada -> DAMPING simulado "
+                          "(Backspace reinicia)", flush=True)
+                self.teleop.enter_damping()
+                return
+            super().stop(reason)
+
+        def policy_step(self):
+            if (self.damping):
+                # the policy is not consulted; the target is unused by
+                # ctrl_step below, returned only to keep the loop's contract
+                self._step_count += 1
+                self._elapsed_s = self._step_count * self.cfg.policy_dt
+                return self.robot.data.joint_pos.clone()
+            return super().policy_step()
+
+        def ctrl_step(self, dof_targets):
+            if (not self.damping):
+                return super().ctrl_step(dof_targets)
+            self.update_vel_command()
+            kd = self._damping_kd
+            effort = self.robot.effort_limit.numpy()
+            for _ in range(self.decimation):
+                dof_vel = self.mj_data.qvel[6:]
+                self.mj_data.ctrl = np.clip(-kd * dof_vel, -effort, effort)
+                mujoco.mj_step(self.mj_model, self.mj_data)
+
+        def run(self):
+            print(TELEOP_HELP, flush=True)
+            print(self.teleop.describe(), flush=True)
+            print("[teleop] digite no TERMINAL (nao na janela do viewer)", flush=True)
+            if hasattr(self, "describe_pd"):
+                print(self.describe_pd(), flush=True)
+            reader = TerminalKeyReader(self._on_key)
+            reader.start()
+            try:
+                return super().run()
+            finally:
+                reader.close()
+                print()
+
+    TerminalTeleopController.__name__ = "TerminalTeleop" + base_cls.__name__
+    return TerminalTeleopController
+
+
 def main():
     import argparse
     import pkgutil
@@ -229,6 +359,11 @@ def main():
     parser.add_argument("--yaw", type=float, default=0.0)
     parser.add_argument("--log_states", default=None,
                         help="write <path>.npz of the rollout, for analysis")
+    parser.add_argument("--teleop", default="viewer", choices=("viewer", "keyboard"),
+                        help="'viewer': W/X A/D Q/E in the MuJoCo window (default); "
+                             "'keyboard': the robot's terminal layout, see docs/17")
+    from booster_deploy.utils.keyboard_teleop import add_teleop_args, limits_from_args
+    add_teleop_args(parser)
     args = parser.parse_args()
 
     import tasks as tasks_pkg
@@ -248,10 +383,23 @@ def main():
 
     base = make_degraded(CONTROLLERS[args.pd], args.degrade)
     base = make_noisy_imu(base, parse_imu_noise(args.imu_noise), args.imu_seed)
-    controller = make_keyboard_controller(base)(cfg)
     print(f"[exp] pd={args.pd}  effort={args.effort}  tn={args.tn}  "
           f"degrade={args.degrade}  imu_noise={args.imu_noise}  "
-          f"hip_yaw_limit={args.hip_yaw_limit}  heading={heading}")
+          f"hip_yaw_limit={args.hip_yaw_limit}  heading={heading}  "
+          f"teleop={args.teleop}")
+    if (args.teleop == "keyboard"):
+        # --vx/--vy/--yaw become the standing baseline the keys add to, which
+        # is what deploy.py --vx means on the robot
+        cfg.vel_command.lin_vel_x_init = args.vx
+        cfg.vel_command.lin_vel_y_init = args.vy
+        cfg.vel_command.ang_vel_yaw_init = args.yaw
+        try:
+            limits = limits_from_args(args, cfg.vel_command)
+        except ValueError as e:
+            parser.error(str(e))
+        make_terminal_teleop_controller(base, limits)(cfg).run()
+        return
+    controller = make_keyboard_controller(base)(cfg)
     controller.vel_command.lin_vel_x = args.vx
     controller.vel_command.lin_vel_y = args.vy
     controller.vel_command.ang_vel_yaw = args.yaw

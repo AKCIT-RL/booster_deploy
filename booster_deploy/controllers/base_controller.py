@@ -222,8 +222,14 @@ class BaseController:
 
         return self.policy.inference()
 
-    def stop(self) -> None:
-        """Stop and clean up the deployment session."""
+    def stop(self, reason: str | None = None) -> None:
+        """Stop and clean up the deployment session.
+
+        reason: why the session ends. "fall" (the policies' fall guard) makes
+        the robot controller exit in kDamping instead of kWalking, and the
+        keyboard teleop in MuJoCo enter simulated damping; None is a plain
+        stop.
+        """
         self.is_running = False
 
     @abstractmethod

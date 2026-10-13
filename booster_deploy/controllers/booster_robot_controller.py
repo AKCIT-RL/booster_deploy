@@ -52,13 +52,25 @@ class CountTimer:
             return time.perf_counter()
 
 
+# How the session ends, shared with the inference process (fall guard).
+EXIT_WALKING = 0    # Ctrl-C, end of session: Booster's controller takes over
+EXIT_DAMPING = 1    # Enter (--teleop keyboard) or a detected fall
+
+
 class BoosterRobotPortal:
     synced_state: SyncedArray
     synced_command: SyncedArray
     synced_action: SyncedArray
     exit_event: synchronize.Event
 
-    def __init__(self, cfg: ControllerCfg, use_sim_time: bool = False) -> None:
+    def __init__(self, cfg: ControllerCfg, use_sim_time: bool = False,
+                 command_source: str = "joystick",
+                 teleop_limits=None) -> None:
+        """command_source: 'joystick' is the stock RemoteControlService (evdev
+        joystick, falling back to its own terminal keys); 'keyboard' is
+        utils.keyboard_teleop.KeyboardTeleopService, the teleop_twist-style
+        layout with a safe envelope, a ramp and Enter -> damping (docs/17).
+        """
         self.cfg = cfg
 
         self.robot = BoosterRobot(cfg.robot)
@@ -66,9 +78,24 @@ class BoosterRobotPortal:
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
 
-        self.remoteControlService = RemoteControlService()
+        # Created before the command source: its key thread may request
+        # damping at once, and both of these are read there. The client does
+        # not exist yet, see request_damping.
+        self.client = None
+        self._mode_lock = threading.Lock()
+        self.exit_mode = mp.Value('i', EXIT_WALKING)
         # Use multiprocessing.Event for inter-process communication
         self.exit_event = mp.Event()
+
+        if command_source == "keyboard":
+            from ..utils.keyboard_teleop import KeyboardTeleopService
+            if cfg.vel_command is None:
+                raise ValueError("--teleop keyboard: a task nao tem vel_command")
+            self.remoteControlService = KeyboardTeleopService(
+                cfg.vel_command, teleop_limits,
+                on_damping=lambda: self.request_damping("tecla Enter"))
+        else:
+            self.remoteControlService = RemoteControlService()
         self.is_running = True
         self.timer = CountTimer(
             self.cfg.booster.low_state_dt, use_sim_time=use_sim_time)
@@ -153,12 +180,40 @@ class BoosterRobotPortal:
             ),
         }
 
+    def request_damping(self, reason: str) -> None:
+        """Put the robot in kDamping NOW and end the session.
+
+        Called from the keyboard thread (Enter) and from the monitor loop (a
+        fall flagged by the inference process). The mode change is issued
+        first and directly, without waiting for the inference process to wind
+        down: in damping the firmware stops tracking joint_ctrl, so a LowCmd
+        the policy still publishes in the next few ms has no effect.
+        Idempotent; serialised with the final ChangeMode in run().
+        """
+        with self._mode_lock:
+            self.exit_mode.value = EXIT_DAMPING
+            self.exit_event.set()
+            if self._damped:
+                return
+            if not self._client_ready:
+                self.logger.warning(
+                    "DAMPING pedido (%s) antes do cliente RPC existir; sera "
+                    "aplicado na saida", reason)
+                return
+            self.logger.warning("DAMPING: %s -> ChangeMode(kDamping)", reason)
+            self.client.ChangeMode(RobotMode.kDamping)
+            self._damped = True
+
+    _damped = False
+    _client_ready = False
+
     def _init_communication(self) -> None:
         try:
             self.client = B1LocoClient()
             self.create_low_cmd_publisher("booster_deploy_low_cmd_pub")
             self._start_low_state_subscription()
             self.client.Init()
+            self._client_ready = True
         except Exception as e:
             self.logger.error(f"Failed to initialize communication: {e}")
             raise
@@ -335,6 +390,11 @@ class BoosterRobotPortal:
         trans = np.linspace(init_joint_pos, prepare_state.joint_pos, num=500)
         start_time = self.timer.get_time()
         for i in range(500):
+            # Enter (damping) or Ctrl-C during the 1 s ramp: stop driving the
+            # joints instead of finishing a pose nobody wants any more
+            if self.exit_event.is_set():
+                self.logger.warning("Rampa de prepare interrompida")
+                return False
             for j in range(self.robot.num_joints):
                 self.motor_cmd[j].q = trans[i][j]
             self.low_cmd_publisher.publish(self.low_cmd)
@@ -454,11 +514,19 @@ class BoosterRobotPortal:
                         self.is_running = False
                         self.exit_event.set()
                         break
-                time.sleep(0.1)
+                # 50 Hz rather than 10: a fall flagged by the inference
+                # process is turned into kDamping here, so this is its latency
+                time.sleep(0.02)
 
-        # exit and switch to walking mode
-        self.logger.info("Exiting controller, switching to walking mode...")
-        self.client.ChangeMode(RobotMode.kWalking)
+        # A fall sets exit_mode from the inference process, which has no RPC
+        # client of its own; the mode change happens here.
+        if self.exit_mode.value == EXIT_DAMPING:
+            self.request_damping("queda detectada / damping pedido")
+            self.logger.info("Saindo do controlador em DAMPING")
+        else:
+            self.logger.info("Exiting controller, switching to walking mode...")
+            with self._mode_lock:
+                self.client.ChangeMode(RobotMode.kWalking)
 
     def __enter__(self) -> BoosterRobotPortal:
         return self
@@ -539,8 +607,12 @@ class BoosterRobotController(BaseController):
             self.portal.motor_cmd[i].kd = kd_val
         self.portal.low_cmd_publisher.publish(self.portal.low_cmd)
 
-    def stop(self):
-        super().stop()
+    def stop(self, reason: str | None = None):
+        super().stop(reason)
+        if reason == "fall":
+            # the portal's monitor loop turns this into ChangeMode(kDamping):
+            # handing a falling robot to the walking controller cannot catch it
+            self.portal.exit_mode.value = EXIT_DAMPING
         self.portal.exit_event.set()
 
     def run(self):

@@ -38,6 +38,13 @@ parser.add_argument(
     help="--mujoco only: catalogue torque-speed falloff, as in teleop.py --tn "
          "(controllers.apply_tn_curve)")
 parser.add_argument(
+    "--teleop", type=str, default=None, choices=("keyboard", "joystick", "viewer"),
+    help="command source. 'keyboard': teleop_twist_keyboard-style keys in the "
+         "TERMINAL, the same layout on --mujoco and on the robot, with a safe "
+         "envelope (--safe-*), a ramp and Enter -> damping (docs/17). "
+         "'joystick': the stock RemoteControlService (robot default). "
+         "'viewer': W/X A/D Q/E in the MuJoCo window (--mujoco default).")
+parser.add_argument(
     "--device", type=str, default="cpu",
     help="Device to run the evaluation on (e.g., 'cpu', 'cuda')")
 
@@ -109,7 +116,38 @@ cmdv.add_argument("--vy", type=float, default=0.0, metavar="M_S",
                   help="lateral velocity with the remote at neutral [m/s]")
 cmdv.add_argument("--vyaw", type=float, default=0.0, metavar="RAD_S",
                   help="yaw rate with the remote at neutral [rad/s]")
+from booster_deploy.utils.keyboard_teleop import (  # noqa: E402
+    add_teleop_args, limits_from_args)
+add_teleop_args(parser)
 args = parser.parse_args()
+
+
+def _teleop_limits(cfg):
+    """Resolve --teleop and, for 'keyboard', the safe envelope. Echoed."""
+    mode = args.teleop or ("viewer" if args.mujoco else "joystick")
+    if mode == "viewer" and not args.mujoco:
+        print("[teleop] ERRO: --teleop viewer so existe com --mujoco")
+        sys.exit(1)
+    if mode == "joystick" and args.mujoco:
+        print("[teleop] ERRO: --teleop joystick so existe no robo; no MuJoCo use "
+              "keyboard ou viewer")
+        sys.exit(1)
+    if mode != "keyboard":
+        return mode, None
+    if cfg.vel_command is None:
+        print("[teleop] ERRO: --teleop keyboard: a task '{}' nao tem "
+              "vel_command".format(args.task))
+        sys.exit(1)
+    try:
+        limits = limits_from_args(args, cfg.vel_command)
+    except ValueError as e:
+        print("[teleop] ERRO: {}".format(e))
+        sys.exit(1)
+    print("[teleop] keyboard | envelope vx<={} vy<={} vyaw<={} | speed {} turn {} "
+          "| accel {} / {} | timeout {}".format(
+              limits.safe_vx, limits.safe_vy, limits.safe_vyaw, limits.speed,
+              limits.turn, limits.accel, limits.yaw_accel, limits.timeout))
+    return mode, limits
 
 
 def _apply_command(cfg):
@@ -492,6 +530,8 @@ def main():
         print("[deploy] effort={} | teto {:.1f}..{:.1f} Nm | tn={}".format(
             args.effort or "task", min(eff), max(eff), args.tn))
 
+    teleop_mode, teleop_limits = _teleop_limits(task_cfg)
+
     # decide how to run based on flags
     if args.mujoco:
         # run mujoco controller
@@ -503,7 +543,12 @@ def main():
             base_cls = MujocoController
             print("[deploy] MujocoController upstream: kd=0 no laco PD e "
                   "dof_damping=0 no XML -> sem amortecimento (use --pd explicit)")
-        if task_cfg.vel_command is not None:
+        if teleop_mode == "keyboard":
+            # the robot's terminal layout, envelope and ramp; Enter and the
+            # fall guard -> simulated damping (teleop.py docstring)
+            from tasks.mimickit_steering.teleop import make_terminal_teleop_controller
+            base_cls = make_terminal_teleop_controller(base_cls, teleop_limits)
+        elif task_cfg.vel_command is not None:
             # teleop.py's W/X A/D Q/E Z P keys, chained into the viewer's own
             # callback so Space/Backspace/S/L/R/G keep working
             from tasks.mimickit_steering.teleop import make_keyboard_controller
@@ -529,7 +574,9 @@ def main():
                 task_cfg.robot.joint_damping[i] = 0.5
 
         from booster_deploy.controllers.booster_robot_controller import BoosterRobotPortal
-        with BoosterRobotPortal(task_cfg, use_sim_time=args.webots) as portal:
+        with BoosterRobotPortal(task_cfg, use_sim_time=args.webots,
+                                command_source=teleop_mode,
+                                teleop_limits=teleop_limits) as portal:
             portal.run()
 
 

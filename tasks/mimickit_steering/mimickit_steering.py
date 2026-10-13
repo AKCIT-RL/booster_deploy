@@ -253,7 +253,7 @@ class MimicKitSteeringPolicy(Policy):
                   "You can disable safety fallback by setting "
                   f"{self.cfg.__class__.__name__}.enable_safety_fallback "
                   "to False.")
-            self.controller.stop()
+            self.controller.stop(reason="fall")
 
     def _measured_heading(self) -> float:
         """The IMU's heading, by MimicKit's own definition (calc_heading), so it
