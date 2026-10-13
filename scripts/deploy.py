@@ -78,6 +78,12 @@ tune.add_argument("--target-lowpass", type=str, default=None, metavar="HZ",
 tune.add_argument("--hip-yaw-limit", type=str, default=None, metavar="BASE[,GAIN]",
                   help="cap the hip-yaw targets to default +/- (BASE + "
                        "GAIN*|yaw_cmd|) rad, e.g. '0.05,0.3' ('none' disables)")
+tune.add_argument("--heading-mode", type=str, default=None, metavar="world|start|body[,K]",
+                  help="mimickit_steering: 'world' integrates vyaw from the "
+                       "IMU's yaw zero (task default, robot turns to that zero "
+                       "on start); 'start' from the heading measured at start; "
+                       "'body' re-anchors on the measured heading "
+                       "every step, leading it by K*vyaw [s]. See docs/16")
 tune.add_argument("--max-target-rate", type=str, default=None, metavar="RAD_S",
                   help="slew ceiling for the position target ('none' disables)")
 
@@ -383,6 +389,18 @@ def _apply_tuning(cfg):
             base, gain = parts[0], (parts[1] if len(parts) == 2 else 0.0)
             cfg.policy.hip_yaw_limit = (base, gain)
             changed.append("hip_yaw_limit={:.3f}+{:.3f}*|yaw| rad".format(base, gain))
+
+    if args.heading_mode is not None:
+        if not hasattr(cfg.policy, "heading_mode"):
+            print("[tune] heading_mode ignored: {} has no 'heading_mode'".format(
+                type(cfg.policy).__name__))
+        else:
+            from tasks.mimickit_steering.controllers import apply_heading_mode
+            try:
+                changed.append("heading=" + apply_heading_mode(cfg, args.heading_mode))
+            except ValueError as e:
+                print("[tune] ERRO: {}".format(e))
+                sys.exit(1)
 
     _apply_command(cfg)
 

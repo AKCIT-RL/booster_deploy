@@ -69,7 +69,7 @@ from tasks.mimickit_steering.controllers import (  # noqa: E402
     CONTROLLERS, DEGRADE_MODES, DEGRADE_NONE, EFFORT_SOURCES, EFFORT_URDF,
     IMU_NOISE_NONE, IMU_NOISE_PRESETS,
     apply_effort_source, apply_tn_curve, make_degraded, make_noisy_imu,
-    parse_hip_yaw_limit, parse_imu_noise)
+    apply_heading_mode, parse_hip_yaw_limit, parse_imu_noise)
 
 VX_STEP = 0.1
 VY_STEP = 0.1
@@ -216,6 +216,14 @@ def main():
                         help="cap the hip-yaw targets to default +/- (BASE + "
                              "GAIN*|yaw_cmd|) rad, e.g. '0.05,0.3'. Off by "
                              "default (see MimicKitSteeringPolicy._hip_yaw_clamp)")
+    parser.add_argument("--heading-mode", dest="heading_mode", default=None,
+                        metavar="world|start|body[,K]",
+                        help="'world' integrates the yaw command from the IMU's "
+                             "yaw zero (task default); 'start' from the heading "
+                             "measured at start; 'body' re-anchors on the "
+                             "measured heading every step, leading it by K*vyaw "
+                             "(see docs/16). Pair with --imu-noise yaw_bias_deg=60 "
+                             "to compare")
     parser.add_argument("--vx", type=float, default=0.0)
     parser.add_argument("--vy", type=float, default=0.0)
     parser.add_argument("--yaw", type=float, default=0.0)
@@ -236,13 +244,14 @@ def main():
     apply_effort_source(cfg, args.effort)
     apply_tn_curve(cfg, args.tn)
     cfg.policy.hip_yaw_limit = parse_hip_yaw_limit(args.hip_yaw_limit)
+    heading = apply_heading_mode(cfg, args.heading_mode)
 
     base = make_degraded(CONTROLLERS[args.pd], args.degrade)
     base = make_noisy_imu(base, parse_imu_noise(args.imu_noise), args.imu_seed)
     controller = make_keyboard_controller(base)(cfg)
     print(f"[exp] pd={args.pd}  effort={args.effort}  tn={args.tn}  "
           f"degrade={args.degrade}  imu_noise={args.imu_noise}  "
-          f"hip_yaw_limit={args.hip_yaw_limit}")
+          f"hip_yaw_limit={args.hip_yaw_limit}  heading={heading}")
     controller.vel_command.lin_vel_x = args.vx
     controller.vel_command.lin_vel_y = args.vy
     controller.vel_command.ang_vel_yaw = args.yaw

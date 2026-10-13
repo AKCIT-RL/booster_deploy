@@ -179,6 +179,7 @@ class MimicKitSteeringPolicy(Policy):
         # resolved once, from the controller that is actually running
         self._lin_vel_is_world = obs_util.root_lin_vel_is_world(controller)
         self._face_heading = 0.0
+        self._anchor_pending = False
 
         # Which observation a checkpoint wants is read off the module itself:
         # the measurable exports carry _frame_dim, the older 200-dim ones do
@@ -202,6 +203,12 @@ class MimicKitSteeringPolicy(Policy):
 
     def reset(self) -> None:
         self._face_heading = 0.0
+        # "start" anchors the world on the heading the robot is standing in, so
+        # vx walks where it points instead of turning to the IMU's yaw zero.
+        # Taken on the first command rather than here: not every caller runs
+        # update_state() before start(), and a stale quaternion would anchor on
+        # the previous session's heading (or the sim's spawn) without a word.
+        self._anchor_pending = (self.cfg.heading_mode == "start")
         if (self._frame_dim is not None):
             # order matters, exactly as in the training env: zero the previous
             # action FIRST, so the frame that refills the history is the one a
@@ -248,9 +255,32 @@ class MimicKitSteeringPolicy(Policy):
                   "to False.")
             self.controller.stop()
 
+    def _measured_heading(self) -> float:
+        """The IMU's heading, by MimicKit's own definition (calc_heading), so it
+        is exactly the angle compute_steering_observations rotates by. Not
+        rpy[2]: the two differ once the trunk has roll or pitch."""
+        root_rot = obs_util.quat_wxyz_to_xyzw(self.robot.data.root_quat_w)
+        heading = obs_util._mimickit()["torch_util"].calc_heading(
+            root_rot.reshape(1, 4))
+        return float(heading.reshape(-1)[0])
+
     def _steering_command(self):
         command = self.controller.vel_command
-        self._face_heading += command.ang_vel_yaw * self.cfg.policy_dt
+        if (self.cfg.heading_mode == "body"):
+            # re-anchored on the measured heading every step: local_face_dir
+            # becomes (cos k*vyaw, sin k*vyaw) whatever the IMU's yaw is, so
+            # neither its zero nor its drift reaches the observation - see
+            # docs/16, alternative B
+            self._face_heading = (self._measured_heading()
+                                  + self.cfg.body_heading_gain * command.ang_vel_yaw)
+        else:
+            if (self._anchor_pending):
+                self._face_heading = self._measured_heading()
+                self._anchor_pending = False
+                # the one number that says where "straight" is on this run
+                print("\n[heading] start: anchored at IMU heading {:+.1f} deg"
+                      .format(math.degrees(self._face_heading)))
+            self._face_heading += command.ang_vel_yaw * self.cfg.policy_dt
         self._face_heading = math.atan2(math.sin(self._face_heading),
                                         math.cos(self._face_heading))
         return obs_util.steering_command(
@@ -537,6 +567,23 @@ class MimicKitSteeringPolicyCfg(PolicyCfg):
     # MimicKitSteeringPolicy._hip_yaw_clamp. `--hip-yaw-limit BASE[,GAIN]` in
     # deploy.py and teleop.py.
     hip_yaw_limit: tuple[float, float] | None = None
+
+    # How the commanded heading (face_dir / tar_dir, WORLD directions) is built.
+    #   "world"  integrate the yaw stick from 0, i.e. from the IMU's yaw zero:
+    #            heading hold, but the robot first turns to wherever that zero
+    #            is, and chases the IMU's yaw drift.
+    #   "start"  as "world", but integrated from the heading measured on the
+    #            first policy step: heading hold from where the robot stands.
+    #            Still chases the IMU's yaw drift.
+    #   "body"   re-anchor on the measured heading every step and lead it by
+    #            body_heading_gain * vyaw: immune to the IMU's yaw zero and
+    #            drift, like locomotion, at the cost of the heading hold.
+    # See docs/16. `--heading-mode` in deploy.py and teleop.py.
+    heading_mode: str = "world"
+    # [s] heading lead per rad/s of yaw command in "body" mode. A guess, not a
+    # fit: the turn rate the policy produces for a given heading error was never
+    # measured, so vyaw is NOT a yaw rate in this mode - measure before tuning.
+    body_heading_gain: float = 0.5
 
 
 @configclass

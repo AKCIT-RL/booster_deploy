@@ -488,3 +488,29 @@ def parse_hip_yaw_limit(spec):
         raise ValueError("--hip-yaw-limit expects BASE[,GAIN] >= 0, got "
                          "{!r}".format(spec))
     return (parts[0], parts[1] if len(parts) == 2 else 0.0)
+
+
+def apply_heading_mode(cfg, spec):
+    """'world' | 'start' | 'body[,K]' onto cfg.policy.heading_mode / body_heading_gain.
+
+    None leaves the task's own setting alone. Returns a short description of
+    what is in effect, for the startup line.
+    """
+    if (spec is not None):
+        parts = spec.split(",")
+        mode = parts[0].strip().lower()
+        if (mode not in ("world", "start", "body") or len(parts) > 2
+                or (mode != "body" and len(parts) == 2)):
+            raise ValueError("--heading-mode expects 'world', 'start' or "
+                             "'body[,K]', got "
+                             "{!r}".format(spec))
+        cfg.policy.heading_mode = mode
+        if (len(parts) == 2):
+            gain = float(parts[1])
+            if (gain < 0.0):
+                raise ValueError("--heading-mode body,K expects K >= 0, got "
+                                 "{!r}".format(spec))
+            cfg.policy.body_heading_gain = gain
+    if (cfg.policy.heading_mode == "body"):
+        return "body,k={:.2f}s".format(cfg.policy.body_heading_gain)
+    return cfg.policy.heading_mode
