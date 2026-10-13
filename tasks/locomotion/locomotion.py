@@ -122,6 +122,11 @@ class LocomotionPolicy(Policy):
 
         # Store action for next step
         self.last_action = action.clone()
+        # for policy.csv (utils/take_log.PolicyLog): the residual action in the
+        # policy's joint order, before default + action * scale
+        self.log_obs = obs
+        self.log_action_raw = action.detach().reshape(-1).clone()
+        self.log_action_raw_names = self.cfg.policy_joint_names
 
         default_joint_pos = self.robot.default_joint_pos
 

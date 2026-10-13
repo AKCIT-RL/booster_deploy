@@ -12,7 +12,9 @@ import types
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from booster_deploy.utils.take_log import CommandLog, EventLog  # noqa: E402
+import torch  # noqa: E402
+
+from booster_deploy.utils.take_log import CommandLog, EventLog, PolicyLog  # noqa: E402
 
 
 def rows(path):
@@ -54,6 +56,31 @@ def test_write_after_close_is_ignored():
     log = EventLog(d)
     log.close()
     log.event("late")          # must not raise: shutdown order is not fixed
+
+
+def test_policy_log_header_and_values():
+    d = tempfile.mkdtemp()
+    log = PolicyLog(d)
+    raw = torch.tensor([0.1, -0.2])
+    target = torch.tensor([0.1, -0.15])
+    obs = torch.tensor([1.0, 2.0, 3.0])
+    log.record(10.0, 1, 0.0021, None, raw, ["a", "b"], target, ["a", "b"], obs)
+    log.record(10.033, 2, 0.0019, 0.0005, raw, ["a", "b"], target, ["a", "b"], obs)
+    log.close()
+    r = rows(os.path.join(d, "policy.csv"))
+    assert r[0] == ["t", "step", "infer_ms", "late_ms", "raw_a", "raw_b",
+                    "target_a", "target_b", "obs_000", "obs_001", "obs_002"]
+    assert r[1][2:4] == ["2.100", ""] and r[2][3] == "0.500"
+    assert [float(x) for x in r[1][4:8]] == [0.1, -0.2, 0.1, -0.15]
+
+
+def test_policy_log_unnamed_raw():
+    d = tempfile.mkdtemp()
+    log = PolicyLog(d)
+    log.record(0.0, 1, 0.001, None, torch.zeros(3), None, torch.zeros(2),
+               ["x", "y"], None)
+    log.close()
+    assert rows(os.path.join(d, "policy.csv"))[0][4:7] == ["raw_00", "raw_01", "raw_02"]
 
 
 if __name__ == "__main__":

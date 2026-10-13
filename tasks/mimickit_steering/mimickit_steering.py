@@ -361,6 +361,12 @@ class MimicKitSteeringPolicy(Policy):
             # already the joint position target: unnormalized and clipped inside
             # the exported module. Do not add a default pose or an action scale.
             dof_targets = self._model(obs)
+        # for policy.csv (utils/take_log.PolicyLog): the network's own output,
+        # before the filters below, and the current observation frame - the
+        # history is the previous frames, already in earlier rows
+        self.log_action_raw = dof_targets.detach().reshape(-1).clone()
+        self.log_action_raw_names = self.robot.cfg.joint_names
+        self.log_obs = obs[:self._frame_dim] if self._frame_dim is not None else obs
         dof_targets = self._hip_yaw_clamp(
             self._rate_limit(self._lowpass(dof_targets)))
         if (self._frame_dim is not None):

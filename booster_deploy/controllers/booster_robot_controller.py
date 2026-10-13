@@ -638,9 +638,14 @@ class BoosterRobotController(BaseController):
         self.start()
         next_inference_time = self.portal.timer.get_time()
         while self.is_running and not self.portal.exit_event.is_set():
-            if self.portal.timer.get_time() < next_inference_time:
+            now = self.portal.timer.get_time()
+            if now < next_inference_time:
                 time.sleep(0.0002)
                 continue
+            # > 0 when this step started late. The schedule is kept rather
+            # than reset, so a stall is followed by back-to-back steps until
+            # it catches up; logged per step in policy.csv (late_ms)
+            self._late_s = now - next_inference_time
             next_inference_time += self.cfg.policy_dt
 
             self.update_state()
@@ -650,6 +655,5 @@ class BoosterRobotController(BaseController):
             dof_targets = self.policy_step()
             self.ctrl_step(dof_targets)
 
-        if self.cmd_log is not None:
-            self.cmd_log.close()
+        self.close_logs()
         self.portal.exit_event.set()

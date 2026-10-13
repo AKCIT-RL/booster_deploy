@@ -137,11 +137,46 @@ def _ceilings(joint_names):
 # análise — função pura, testável sem ROS
 # --------------------------------------------------------------------------- #
 
-def analyze(data, joint_names, policy_hz=None):
+def _cmd_age(t, cmd_t):
+    """Para cada amostra do /low_state, há quanto tempo chegou o último
+    /joint_ctrl [s] (inf antes do primeiro)."""
+    if len(cmd_t) == 0:
+        return np.full(len(t), np.inf)
+    idx = np.searchsorted(cmd_t, t, side="right") - 1
+    age = np.full(len(t), np.inf)
+    ok = idx >= 0
+    age[ok] = t[ok] - cmd_t[idx[ok]]
+    return age
+
+
+def policy_window_from_events(data, events_path):
+    """(t_ini, t_fim) da política no eixo do log, a partir do events.csv do
+    take: de `rl_gait` até o primeiro `exit`/`damping`/`inference_died`.
+    None se o arquivo ou o t0_monotonic faltarem (takes antigos)."""
+    if not events_path or not os.path.exists(events_path) \
+            or "t0_monotonic" not in data:
+        return None
+    import csv
+    t0 = float(np.asarray(data["t0_monotonic"]))
+    with open(events_path, newline="") as f:
+        ev = [(float(r["t"]) - t0, r["event"]) for r in csv.DictReader(f)]
+    starts = [t for t, e in ev if e == "rl_gait"]
+    if not starts:
+        return None
+    lo = starts[-1]
+    ends = [t for t, e in ev if t > lo and e in ("exit", "damping", "inference_died")]
+    return (lo, min(ends) if ends else np.inf)
+
+
+def analyze(data, joint_names, policy_hz=None, window=None):
     """Monta o relatório a partir dos arrays gravados.
 
     `data` é o dict que vai para o .npz. Nenhuma dependência de ROS aqui: é o
     que permite --replay e --selftest exercitarem este mesmo caminho.
+
+    `window` = (t_ini, t_fim) da política no eixo do log (do events.csv, ver
+    policy_window_from_events). Sem ele, a janela é inferida dos próprios
+    dados - ver o comentário de JANELA abaixo.
     """
     lines = []
     def w(s=""):
@@ -193,21 +228,44 @@ def analyze(data, joint_names, policy_hz=None):
     else:
         w("   /joint_ctrl: NENHUMA mensagem - a politica nunca comandou")
 
-    # A partir daqui só interessa a janela em que a política estava comandando.
-    # Antes do primeiro /joint_ctrl o robô está em rampa ou parado, e misturar
-    # as duas janelas contamina toda média.
-    act = has_cmd
+    # JANELA. Daqui em diante só interessa o trecho em que a POLÍTICA comandava.
+    # "A partir do primeiro /joint_ctrl" (a versão anterior) não serve: a rampa
+    # de prepare também publica em /joint_ctrl, com o kp de preparo, e depois do
+    # fim (Ctrl-C, Enter, queda) o último alvo fica valendo para sempre neste
+    # log, então a queda em damping entrava como erro de rastreamento. Três
+    # cortes, todos necessários:
+    #   - janela do events.csv (rl_gait -> exit/damping), quando existe;
+    #   - comando "fresco": o último /joint_ctrl tem no máximo 1,5 período da
+    #     política (corta a espera entre a rampa e o `r`, e a cauda do fim);
+    #   - sem events.csv: só amostras com o kp do ÚLTIMO comando, que é o da
+    #     política (corta a rampa, que tem o kp de preparo).
+    period = (1.0 / policy_hz) if policy_hz else \
+        (float(np.median(np.diff(cmd_t))) if len(cmd_t) > 2 else 0.02)
+    age = _cmd_age(t, cmd_t)
+    act = has_cmd & (age <= 1.5 * period)
+    if window is not None:
+        act &= (t >= window[0]) & (t <= window[1])
+        how = f"events.csv: rl_gait em {window[0]:.2f} s ate {window[1]:.2f} s"
+    else:
+        same_kp = np.all(np.abs(kp - kp[-1]) < 1e-6, axis=1) if n else act
+        act &= same_kp
+        how = "inferida: comando fresco + kp do ultimo comando (sem events.csv)"
     if act.sum() < 10:
         w("")
-        w("!! menos de 10 amostras com comando ativo: relatorio encerrado aqui")
+        w("!! menos de 10 amostras com a politica comandando: relatorio encerrado aqui")
         return "\n".join(lines), {}
 
     w("")
     w(f"-- JANELA COM POLITICA ATIVA: {act.sum()} amostras, "
       f"{t[act][-1] - t[act][0]:.2f} s --")
+    w(f"   {how}")
 
     qa, qca, taua, dqa = q[act], q_cmd[act], tau[act], dq[act]
     err = np.degrees(qca - qa)      # graus, com sinal: cmd - medido
+    # amostras no FIM do passo (o alvo já vale há >= 75% do período): é onde o
+    # PD já teve tempo de seguir o degrau, então o erro ali é o de regime, não
+    # o transitório de cada alvo novo
+    late_phase = age[act] >= 0.75 * period
 
     # ---- ganhos na rede -------------------------------------------------- #
     w("")
@@ -223,14 +281,20 @@ def analyze(data, joint_names, policy_hz=None):
     # ---- erro de rastreamento -------------------------------------------- #
     w("")
     w("-- ERRO DE RASTREAMENTO |cmd - medido| (graus) --")
-    w("   a assinatura de 'afiado': erro em regime alto = kp baixo para a carga")
-    w(f"   {'junta':22s} {'p50':>7s} {'p95':>7s} {'max':>7s} {'medio_com_sinal':>16s}")
+    w("   p50/p95/max: todas as amostras, incluindo o transitorio logo apos cada")
+    w("   alvo novo (degrau de ate um passo inteiro da politica).")
+    w("   fim_passo: so o fim de cada passo, onde o PD ja seguiu o degrau ->")
+    w("   erro de regime. Alto la = kp baixo para a carga; alto so no p50 =")
+    w("   o alvo anda mais rapido do que a junta acompanha.")
+    w(f"   {'junta':22s} {'p50':>7s} {'p95':>7s} {'max':>7s} {'fim_passo':>9s} "
+      f"{'medio_com_sinal':>16s}")
     order = np.argsort(-np.abs(err).mean(axis=0))
     summary = {}
     for i in order:
         a = np.abs(err[:, i])
+        fim = np.percentile(a[late_phase], 50) if late_phase.any() else float("nan")
         w(f"   {names[i]:22s} {np.percentile(a,50):7.2f} {np.percentile(a,95):7.2f} "
-          f"{a.max():7.2f} {err[:, i].mean():+16.2f}")
+          f"{a.max():7.2f} {fim:9.2f} {err[:, i].mean():+16.2f}")
         summary[names[i]] = dict(p50=float(np.percentile(a, 50)),
                                  p95=float(np.percentile(a, 95)),
                                  mean_signed=float(err[:, i].mean()))
@@ -272,6 +336,14 @@ def analyze(data, joint_names, policy_hz=None):
           f"acima do pico de catalogo: {int((peak > ceil['catalogo']).sum())}/{nj}")
 
     # ---- chatter --------------------------------------------------------- #
+    if window is not None and len(cmd_t):
+        keep = (cmd_t >= window[0]) & (cmd_t <= window[1])
+        cmd_t, cmd_q = cmd_t[keep], cmd_q[keep]
+    elif len(cmd_t):
+        # o mesmo corte de kp, aplicado aos eventos de /joint_ctrl
+        ci = np.clip(np.searchsorted(t, cmd_t), 0, n - 1)
+        keep = np.all(np.abs(kp[ci] - kp[-1]) < 1e-6, axis=1)
+        cmd_t, cmd_q = cmd_t[keep], cmd_q[keep]
     if len(cmd_q) > 4:
         w("")
         w("-- CHATTER DO ALVO (reversoes de direcao por segundo) --")
@@ -326,6 +398,48 @@ def analyze(data, joint_names, policy_hz=None):
         w(f"   {names[i]:22s} pico {vpk[i]:7.2f}")
 
     return "\n".join(lines), summary
+
+
+def timing_report(policy_csv, policy_hz=None):
+    """Tempo de cada passo da política, do policy.csv do take.
+
+    É o relatório que responde a "engasgos": um passo que atrasa (late_ms) ou
+    demora (infer_ms) congela o alvo por mais de um período, e como o laço
+    mantém o cronograma, os passos perdidos rodam colados logo depois.
+    """
+    if not policy_csv or not os.path.exists(policy_csv):
+        return ""
+    import csv
+    with open(policy_csv, newline="") as f:
+        rows = list(csv.DictReader(f))
+    if len(rows) < 3:
+        return ""
+    t = np.array([float(r["t"]) for r in rows])
+    inf_ms = np.array([float(r["infer_ms"]) for r in rows])
+    late = np.array([float(r["late_ms"]) for r in rows if r.get("late_ms")])
+    dt_ms = np.diff(t) * 1e3
+    per_ms = 1e3 / policy_hz if policy_hz else float(np.median(dt_ms))
+    L = ["", "-- TEMPO DOS PASSOS DA POLITICA (policy.csv) --",
+         f"   periodo nominal {per_ms:.1f} ms, {len(rows)} passos"]
+    L.append(f"   intervalo entre passos [ms]: p50={np.percentile(dt_ms,50):6.1f} "
+             f"p95={np.percentile(dt_ms,95):6.1f} max={dt_ms.max():6.1f}")
+    slow = int((dt_ms > 1.5 * per_ms).sum())
+    burst = int((dt_ms < 0.5 * per_ms).sum())
+    L.append(f"   passos com intervalo > 1,5 periodo (alvo congelado): {slow}")
+    L.append(f"   passos com intervalo < 0,5 periodo (colados, recuperando atraso): {burst}")
+    L.append(f"   inferencia [ms]: p50={np.percentile(inf_ms,50):6.1f} "
+             f"p95={np.percentile(inf_ms,95):6.1f} max={inf_ms.max():6.1f}"
+             + ("   <-- passa do periodo" if inf_ms.max() > per_ms else ""))
+    if len(late):
+        L.append(f"   atraso no inicio do passo [ms]: p95={np.percentile(late,95):6.1f} "
+                 f"max={late.max():6.1f}")
+    if slow:
+        worst = np.argsort(-dt_ms)[:5]
+        L.append("   piores intervalos (passo: intervalo ms / inferencia ms):")
+        for k in worst:
+            L.append(f"     {int(rows[k+1]['step']):6d}: {dt_ms[k]:7.1f} / "
+                     f"{inf_ms[k+1]:6.1f}")
+    return "\n".join(L)
 
 
 # --------------------------------------------------------------------------- #
@@ -530,6 +644,7 @@ def main():
     p.add_argument("--selftest", action="store_true",
                    help="roda a analise sobre dados sinteticos com defeitos")
     args = p.parse_args()
+    args.task_given = "--task" in sys.argv
 
     if args.selftest:
         names, hz = _joint_names_from_task(args.task)
@@ -542,8 +657,13 @@ def main():
         z = np.load(args.replay, allow_pickle=True)
         data = {k: z[k] for k in z.files}
         names = [str(x) for x in data.get("joint_names", [])] or None
-        report, _ = analyze(data, names)
-        print(report)
+        take = os.path.dirname(os.path.abspath(args.replay))
+        hz = None
+        if args.task_given:
+            _, hz = _joint_names_from_task(args.task)
+        window = policy_window_from_events(data, os.path.join(take, "events.csv"))
+        report, _ = analyze(data, names, policy_hz=hz, window=window)
+        print(report + timing_report(os.path.join(take, "policy.csv"), hz))
         return
 
     names, hz = _joint_names_from_task(args.task)
@@ -553,7 +673,11 @@ def main():
               "Confira o `source` do setup.bash e se o robo esta ligado.")
         sys.exit(1)
     np.savez_compressed(args.out + ".npz", **data)
-    report, _ = analyze(data, names, policy_hz=hz)
+    # num take (scripts/take.sh), events.csv e policy.csv estao ao lado
+    take = os.path.dirname(os.path.abspath(args.out))
+    window = policy_window_from_events(data, os.path.join(take, "events.csv"))
+    report, _ = analyze(data, names, policy_hz=hz, window=window)
+    report += timing_report(os.path.join(take, "policy.csv"), hz)
     print(report)
     with open(args.out + ".txt", "w") as f:
         f.write(report + "\n")

@@ -88,6 +88,74 @@ class CommandLog(CsvLog):
         self._pending = ""
 
 
+class PolicyLog:
+    """policy.csv: what the network produced, every step, next to its timing.
+
+        t, step, infer_ms, late_ms, raw_<j>..., target_<j>..., obs_<i>...
+
+    raw_*     the network output BEFORE the deploy-side filters (low-pass,
+              rate limit, hip-yaw clamp). For mimickit it is already an
+              absolute joint target; for locomotion it is the residual action
+              in the policy's own joint order, before `default + a * scale`.
+    target_*  what ctrl_step sends, i.e. the q of /joint_ctrl, robot order.
+              raw vs target isolates the filters; target vs the measured q of
+              log.npz is what the motors reached.
+    obs_*     the CURRENT observation frame only (80 numbers for the
+              measurable mimickit layout); the stacked history is the previous
+              rows, so it is not stored 30 times over.
+    infer_ms  wall time of policy.inference() on this step.
+    late_ms   robot only: how late this step started against its 1/policy_hz
+              schedule. The loop keeps its schedule, so after a stall the
+              missed steps run back to back - late_ms is how that shows.
+
+    Header is built on the first row, when the sizes are known.
+    """
+
+    def __init__(self, log_dir: str):
+        self.path = os.path.join(log_dir, "policy.csv")
+        os.makedirs(log_dir, exist_ok=True)
+        self._f = None
+        self._w = None
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _flat(x):
+        if x is None:
+            return []
+        try:
+            return [float(v) for v in x.detach().reshape(-1).cpu().tolist()]
+        except AttributeError:
+            return [float(v) for v in x]
+
+    def record(self, t: float, step: int, infer_s: float, late_s,
+               raw, raw_names, target, target_names, obs) -> None:
+        raw, target, obs = self._flat(raw), self._flat(target), self._flat(obs)
+        with self._lock:
+            if self._f is None:
+                new = not os.path.exists(self.path) or os.path.getsize(self.path) == 0
+                self._f = open(self.path, "a", buffering=1, newline="")
+                self._w = csv.writer(self._f)
+                if new:
+                    rn = list(raw_names) if raw_names is not None and \
+                        len(raw_names) == len(raw) else \
+                        ["{:02d}".format(i) for i in range(len(raw))]
+                    self._w.writerow(
+                        ["t", "step", "infer_ms", "late_ms"]
+                        + ["raw_" + n for n in rn]
+                        + ["target_" + n for n in target_names]
+                        + ["obs_{:03d}".format(i) for i in range(len(obs))])
+            late = "" if late_s is None else "{:.3f}".format(late_s * 1e3)
+            self._w.writerow(
+                ["{:.6f}".format(t), step, "{:.3f}".format(infer_s * 1e3), late]
+                + ["{:.6g}".format(v) for v in raw + target + obs])
+
+    def close(self) -> None:
+        with self._lock:
+            if self._f is not None:
+                self._f.close()
+                self._f = None
+
+
 class EventLog(CsvLog):
     HEADER = ["t", "event", "detail"]
 

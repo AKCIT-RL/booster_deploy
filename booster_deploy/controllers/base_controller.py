@@ -2,6 +2,7 @@ from __future__ import annotations
 from abc import abstractmethod
 import inspect
 import os
+import time
 import torch
 
 from .controller_cfg import (
@@ -202,6 +203,10 @@ class BaseController:
         # opened lazily in start(): on the robot the controller is built in the
         # inference process, and the file must belong to the process writing it
         self.cmd_log = None
+        self.policy_log = None
+        # set by a controller that runs on a schedule (the robot's inference
+        # loop) to how late the current step started; None where there is none
+        self._late_s = None
 
     def start(self):
         """Begin a deployment session.
@@ -212,6 +217,9 @@ class BaseController:
         if self.cfg.log_dir is not None and self.cmd_log is None:
             from ..utils.take_log import CommandLog
             self.cmd_log = CommandLog(self.cfg.log_dir)
+        if self.cfg.log_dir is not None and self.policy_log is None:
+            from ..utils.take_log import PolicyLog
+            self.policy_log = PolicyLog(self.cfg.log_dir)
         self.log_event("start")
         self.policy.reset()
 
@@ -232,13 +240,30 @@ class BaseController:
         self._step_count += 1
         self._elapsed_s = self._step_count * self.cfg.policy_dt
 
+        t_step = time.monotonic()
         dof_targets = self.policy.inference()
+        infer_s = time.monotonic() - t_step
+        if self.policy_log is not None:
+            # the policy's own fields (log_obs, log_action_raw) are optional:
+            # a task that does not set them still logs timing and targets
+            p = self.policy
+            self.policy_log.record(
+                t_step, self._step_count, infer_s, self._late_s,
+                getattr(p, "log_action_raw", None),
+                getattr(p, "log_action_raw_names", None),
+                dof_targets, self.robot.cfg.joint_names,
+                getattr(p, "log_obs", None))
         if self.cmd_log is not None:
             # after inference: the command is the one this step used, and the
             # heading is the one the policy just integrated from it
             self.cmd_log.record(self._step_count, self.vel_command,
                                 getattr(self.policy, "_face_heading", None))
         return dof_targets
+
+    def close_logs(self) -> None:
+        for log in (self.cmd_log, self.policy_log):
+            if log is not None:
+                log.close()
 
     def stop(self, reason: str | None = None) -> None:
         """Stop and clean up the deployment session.
