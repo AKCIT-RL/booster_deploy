@@ -199,6 +199,9 @@ class BaseController:
         if self.cfg.vel_command is not None:
             self.vel_command = VelocityCommand(cfg.vel_command)
         self.policy = self.cfg.policy.constructor(self.cfg.policy, self)
+        # opened lazily in start(): on the robot the controller is built in the
+        # inference process, and the file must belong to the process writing it
+        self.cmd_log = None
 
     def start(self):
         """Begin a deployment session.
@@ -206,7 +209,16 @@ class BaseController:
         self._step_count = 0
         self._elapsed_s = 0.0
         self.is_running = True
+        if self.cfg.log_dir is not None and self.cmd_log is None:
+            from ..utils.take_log import CommandLog
+            self.cmd_log = CommandLog(self.cfg.log_dir)
+        self.log_event("start")
         self.policy.reset()
+
+    def log_event(self, event: str) -> None:
+        """Tag the next cmd.csv row with an event; no-op without --log-dir."""
+        if self.cmd_log is not None:
+            self.cmd_log.mark(event)
 
     def policy_step(self) -> torch.Tensor:
         """Execute one inference step and return the action.
@@ -220,7 +232,13 @@ class BaseController:
         self._step_count += 1
         self._elapsed_s = self._step_count * self.cfg.policy_dt
 
-        return self.policy.inference()
+        dof_targets = self.policy.inference()
+        if self.cmd_log is not None:
+            # after inference: the command is the one this step used, and the
+            # heading is the one the policy just integrated from it
+            self.cmd_log.record(self._step_count, self.vel_command,
+                                getattr(self.policy, "_face_heading", None))
+        return dof_targets
 
     def stop(self, reason: str | None = None) -> None:
         """Stop and clean up the deployment session.
@@ -230,6 +248,8 @@ class BaseController:
         keyboard teleop in MuJoCo enter simulated damping; None is a plain
         stop.
         """
+        if reason is not None:
+            self.log_event(reason)
         self.is_running = False
 
     @abstractmethod

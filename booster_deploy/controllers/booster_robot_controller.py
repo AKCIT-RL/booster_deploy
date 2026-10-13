@@ -74,6 +74,10 @@ class BoosterRobotPortal:
         self.cfg = cfg
 
         self.robot = BoosterRobot(cfg.robot)
+        self.events = None
+        if cfg.log_dir is not None:
+            from ..utils.take_log import EventLog
+            self.events = EventLog(cfg.log_dir)
 
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
@@ -203,9 +207,14 @@ class BoosterRobotPortal:
             self.logger.warning("DAMPING: %s -> ChangeMode(kDamping)", reason)
             self.client.ChangeMode(RobotMode.kDamping)
             self._damped = True
+            self._event("damping", reason)
 
     _damped = False
     _client_ready = False
+
+    def _event(self, name: str, detail: str = "") -> None:
+        if self.events is not None:
+            self.events.event(name, detail)
 
     def _init_communication(self) -> None:
         try:
@@ -378,6 +387,7 @@ class BoosterRobotPortal:
 
         # change to custom mode
         self.client.ChangeMode(RobotMode.kCustom)
+        self._event("custom_mode")
         # for i in range(20):  # try multiple times to make sure mode is changed
         #     self.client.ChangeMode(RobotMode.kCustom)
         #     time.sleep(0.5)
@@ -394,6 +404,7 @@ class BoosterRobotPortal:
             # joints instead of finishing a pose nobody wants any more
             if self.exit_event.is_set():
                 self.logger.warning("Rampa de prepare interrompida")
+                self._event("prepare_aborted")
                 return False
             for j in range(self.robot.num_joints):
                 self.motor_cmd[j].q = trans[i][j]
@@ -401,6 +412,7 @@ class BoosterRobotPortal:
             while self.timer.get_time() < start_time + (i + 1) * 0.002:
                 time.sleep(0.0002)
         self.logger.info("Custom mode started, initialized with prepare pose")
+        self._event("prepare_done")
         return True
 
     def start_rl_gait_conditionally(self):
@@ -425,6 +437,7 @@ class BoosterRobotPortal:
         )
         self.inference_process.start()
         self.logger.info("Inference process started")
+        self._event("rl_gait")
 
         print(f"{self.remoteControlService.get_operation_hint()}")
         return True
@@ -511,6 +524,7 @@ class BoosterRobotPortal:
                     inference_process_alive = self.inference_process.is_alive()
                     if not inference_process_alive:
                         self.logger.error("Inference process died unexpectedly")
+                        self._event("inference_died")
                         self.is_running = False
                         self.exit_event.set()
                         break
@@ -523,10 +537,12 @@ class BoosterRobotPortal:
         if self.exit_mode.value == EXIT_DAMPING:
             self.request_damping("queda detectada / damping pedido")
             self.logger.info("Saindo do controlador em DAMPING")
+            self._event("exit", "damping")
         else:
             self.logger.info("Exiting controller, switching to walking mode...")
             with self._mode_lock:
                 self.client.ChangeMode(RobotMode.kWalking)
+            self._event("exit", "walking")
 
     def __enter__(self) -> BoosterRobotPortal:
         return self
@@ -634,4 +650,6 @@ class BoosterRobotController(BaseController):
             dof_targets = self.policy_step()
             self.ctrl_step(dof_targets)
 
+        if self.cmd_log is not None:
+            self.cmd_log.close()
         self.portal.exit_event.set()

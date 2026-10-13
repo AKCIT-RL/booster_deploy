@@ -347,6 +347,14 @@ def record(args, joint_names):
     latest = {"q": np.zeros(nj), "kp": np.zeros(nj), "kd": np.zeros(nj),
               "seen": False}
 
+    # scripts/take.sh runs this in the background, where bash leaves SIGINT
+    # ignored, and stops it with SIGTERM: treat that as the Ctrl-C it replaces
+    import signal
+
+    def _on_term(signum, frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _on_term)
+
     rclpy.init()
     node = rclpy.create_node("booster_deploy_logger")
     t0 = time.monotonic()
@@ -409,6 +417,9 @@ def record(args, joint_names):
     data["cmd_q"] = (np.asarray(cmd_buf["cmd_q"]) if cmd_buf["cmd_q"]
                      else np.zeros((0, nj)))
     data["joint_names"] = np.asarray(joint_names)
+    # CLOCK_MONOTONIC at t=0: the clock of cmd.csv/events.csv
+    # (utils/take_log.py), so a take's files align by subtraction
+    data["t0_monotonic"] = np.asarray(t0)
     return data
 
 

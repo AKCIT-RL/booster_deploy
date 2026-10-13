@@ -140,6 +140,10 @@ class ControllerCfg:
     mujoco: MujocoControllerCfg = MujocoControllerCfg()
     booster: BoosterRobotControllerCfg = BoosterRobotControllerCfg()
     evaluator: Optional[EvaluatorCfg] = None
+    # Directory for the per-take CSV logs (utils/take_log.py): cmd.csv from the
+    # controller, events.csv from the robot portal. None = no logging. Set by
+    # deploy.py --log-dir, which scripts/take.sh passes.
+    log_dir: Optional[str] = None
 
     def __post_init__(self):
         self.mujoco.physics_dt = self.policy_dt / self.mujoco.decimation

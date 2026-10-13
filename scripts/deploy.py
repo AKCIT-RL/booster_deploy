@@ -45,6 +45,12 @@ parser.add_argument(
          "'joystick': the stock RemoteControlService (robot default). "
          "'viewer': W/X A/D Q/E in the MuJoCo window (--mujoco default).")
 parser.add_argument(
+    "--log-dir", type=str, default=None, metavar="DIR",
+    help="write DIR/cmd.csv (vx, vy, vyaw and heading the policy saw, every "
+         "step) and, on the robot, DIR/events.csv (mode changes, damping). "
+         "With --mujoco also DIR/sim_states.npz. scripts/take.sh passes it; "
+         "see docs/18-takes.md")
+parser.add_argument(
     "--device", type=str, default="cpu",
     help="Device to run the evaluation on (e.g., 'cpu', 'cuda')")
 
@@ -531,6 +537,16 @@ def main():
             args.effort or "task", min(eff), max(eff), args.tn))
 
     teleop_mode, teleop_limits = _teleop_limits(task_cfg)
+
+    if args.log_dir is not None:
+        import os
+        os.makedirs(args.log_dir, exist_ok=True)
+        task_cfg.log_dir = os.path.abspath(args.log_dir)
+        if args.mujoco:
+            # MujocoController's own state logger, the sim's stand-in for
+            # log_deploy.py (which needs the robot's ROS topics)
+            task_cfg.mujoco.log_states = os.path.join(task_cfg.log_dir, "sim_states")
+        print("[log] take em {}".format(task_cfg.log_dir))
 
     # decide how to run based on flags
     if args.mujoco:

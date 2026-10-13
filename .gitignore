@@ -11,3 +11,6 @@ __pycache__/
 *.pyd
 
 
+
+# Takes gravados por scripts/take.sh (docs/18-takes.md)
+takes/

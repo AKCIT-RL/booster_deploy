@@ -225,6 +225,7 @@ def make_terminal_teleop_controller(base_cls, limits=None):
                 if (self.teleop.phase == PHASE_DAMPING):
                     print("\n[teleop] reset: saindo do damping, politica reiniciada",
                           flush=True)
+                    self.log_event("reset")
                 self.teleop.resume()
                 policy_reset()
 
@@ -236,6 +237,7 @@ def make_terminal_teleop_controller(base_cls, limits=None):
 
         def _on_key(self, ch):
             if (self.teleop.handle_key(ch) == EVENT_DAMPING):
+                self.log_event("damping")
                 print("\n[teleop] ENTER -> DAMPING simulado (Backspace na janela "
                       "do viewer reinicia)", flush=True)
             else:
@@ -259,6 +261,7 @@ def make_terminal_teleop_controller(base_cls, limits=None):
 
         def stop(self, reason=None):
             if (reason == "fall"):
+                self.log_event("fall")
                 if (not self.damping):
                     print("\n[teleop] queda detectada -> DAMPING simulado "
                           "(Backspace reinicia)", flush=True)
@@ -272,6 +275,11 @@ def make_terminal_teleop_controller(base_cls, limits=None):
                 # ctrl_step below, returned only to keep the loop's contract
                 self._step_count += 1
                 self._elapsed_s = self._step_count * self.cfg.policy_dt
+                if (self.cmd_log is not None):
+                    # keep the timeline continuous: the take shows the damped
+                    # stretch as rows at zero command, not as a gap
+                    self.cmd_log.record(self._step_count, self.vel_command,
+                                        getattr(self.policy, "_face_heading", None))
                 return self.robot.data.joint_pos.clone()
             return super().policy_step()
 
